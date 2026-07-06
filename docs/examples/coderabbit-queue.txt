@@ -1,0 +1,13 @@
+# CodeRabbit review poller queue — copied by the captain into data/coderabbit-queue.txt
+#
+# Format: one GitHub PR URL per line.  Blank lines and #-comments are ignored.
+# Only https://github.com/<owner>/<repo>/pull/<n> URLs are recognized; anything
+# else logs a warning and is skipped.
+#
+# The polling script (`bin/fm-coderabbit-poll.sh`) is intended to run hourly
+# via host cron (see docs/coderabbit-poll.md for setup).
+#
+# Example entries:
+#
+# https://github.com/famclaw/famclaw/pull/159
+# https://github.com/famclaw/honeybadger/pull/56

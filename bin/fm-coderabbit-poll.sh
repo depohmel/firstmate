@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# fm-coderabbit-poll.sh
+#
+# Poll PRs listed in $FM_HOME/data/coderabbit-queue.txt for new CodeRabbit
+# reviews.  For each new actionable review found, spawn a scoped crewmate to
+# address it.  Designed to run periodically via host cron (hourly recommended,
+# matching CodeRabbit free-tier's org-wide 1-review-per-hour rate limit).
+#
+# Uses flock so overlapping fires never double-spawn.  Watermarks per PR keep
+# already-processed reviews from being re-dispatched.
+#
+# See docs/coderabbit-poll.md for full details, queue-file format, and the
+# recommended crontab line.
+set -eu
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
+STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="$FM_HOME/data"
+
+QUEUE_FILE="$DATA/coderabbit-queue.txt"
+WATERMARK_FILE="$STATE/coderabbit-watermarks.tsv"
+LOCK_FILE="$STATE/coderabbit-poll.lock"
+LOG_TAG="[fm-coderabbit-poll]"
+
+log() { printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LOG_TAG" "$*"; }
+warn() { log "$*" >&2; }
+
+if [ ! -f "$QUEUE_FILE" ]; then
+  # No queue file = nothing to do.  This is the normal resting state on a
+  # captain who has not enabled the poll yet.  Silent success.
+  exit 0
+fi
+if ! command -v gh >/dev/null 2>&1; then
+  warn "error: gh CLI not installed or not on PATH"
+  exit 1
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  warn "error: jq not installed"
+  exit 1
+fi
+if ! command -v flock >/dev/null 2>&1; then
+  warn "error: flock not available"
+  exit 1
+fi
+
+mkdir -p "$STATE"
+touch "$WATERMARK_FILE"
+
+# Non-blocking lock: overlapping fires just skip.  With hourly cron this should
+# never trigger, but a long crewmate spawn or a manual test could hold the lock.
+exec {LOCK_FD}> "$LOCK_FILE"
+if ! flock -n "$LOCK_FD"; then
+  log "previous poll still holding lock, skipping this fire"
+  exit 0
+fi
+
+read_queue() {
+  # Skip blank lines and #-comments.
+  grep -Ev '^[[:space:]]*(#|$)' "$QUEUE_FILE" || true
+}
+
+watermark_get() {
+  awk -F'\t' -v u="$1" '$1==u{print $2; exit}' "$WATERMARK_FILE"
+}
+
+watermark_set() {
+  # $1 url, $2 iso-timestamp.  Overwrites existing row for url, appends if new.
+  local url=$1 ts=$2 tmp
+  tmp=$(mktemp)
+  awk -F'\t' -v u="$url" -v t="$ts" '$1!=u{print} END{print u"\t"t}' \
+    "$WATERMARK_FILE" > "$tmp"
+  mv "$tmp" "$WATERMARK_FILE"
+}
+
+# For the crewmate task id we sanitize the repo name.  Numeric review ids from
+# GitHub's API are fine as-is.
+sanitize_slug() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | sed -E 's/-+/-/g; s/^-|-$//g'; }
+
+# Extract "Actionable comments posted: N" from CodeRabbit review body.  Returns
+# 0 (no findings) when the marker is absent.
+actionable_count() {
+  printf '%s' "$1" \
+    | grep -oE 'Actionable comments posted: [0-9]+' \
+    | head -1 \
+    | grep -oE '[0-9]+$' \
+    || printf '0'
+}
+
+# Find a firstmate project clone that matches the target repo, or fall back to
+# any project (the crewmate does real work in a scratch clone regardless).
+resolve_project() {
+  local repo=$1 match
+  match=$(find "$FM_HOME/projects" -maxdepth 1 -mindepth 1 -type d -name "$repo" 2>/dev/null | head -1 || true)
+  if [ -n "$match" ]; then
+    printf '%s' "$match"
+    return 0
+  fi
+  match=$(find "$FM_HOME/projects" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1 || true)
+  if [ -n "$match" ]; then
+    printf '%s' "$match"
+    return 0
+  fi
+  return 1
+}
+
+spawn_fix_crewmate() {
+  local owner=$1 repo=$2 pr_num=$3 url=$4 review_id=$5 review_body=$6
+
+  local repo_slug id brief_dir
+  repo_slug=$(sanitize_slug "$repo")
+  id="cr-$repo_slug-pr$pr_num-$review_id"
+  brief_dir="$DATA/$id"
+  mkdir -p "$brief_dir"
+
+  printf '%s' "$review_body" > "$brief_dir/review.md"
+
+  cat > "$brief_dir/brief.md" <<BRIEF
+You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+
+# Task
+CodeRabbit posted a new actionable review on $url. Address the actionable findings, push the fixes if any, and stop.
+
+The FULL review body is at $brief_dir/review.md — read it once, then decide which findings to fix and which to decline. Do NOT re-query CodeRabbit; this review is what you are responding to.
+
+## Do these in order
+1. Verify you are in an isolated treehouse worktree — \`pwd -P\` and \`git rev-parse --show-toplevel\` should both resolve to a treehouse pool path, not the firstmate root.
+2. Clone the target repo INSIDE your worktree: \`gh repo clone $owner/$repo ./scratch\` then \`cd scratch\`.
+3. Fetch and check out the PR branch: \`gh pr checkout $pr_num --repo $owner/$repo\`.
+4. Read \`$brief_dir/review.md\` — the exact CodeRabbit review body.
+5. For each actionable finding, verify against current code (files may have moved since the review), then either:
+   - Fix it with a focused commit if the finding is still valid and the fix is uncontroversial (docs, one-line code, straightforward test tweak), OR
+   - Decline it with a brief PR comment via \`gh pr comment $pr_num --repo $owner/$repo --body "..."\` if it is stylistic disagreement, out of scope, already addressed, or judgment-heavy.
+6. If you made commits, push: \`git push origin \$(git branch --show-current)\`. Then post a single summary PR comment listing which findings were fixed (with commit shas) and which were declined (with brief reasons).
+7. If you made NO commits (declined everything), still post one summary PR comment listing what was declined and why.
+8. Append \`done: <one-line summary>\` to /home/dep/tools/firstmate/state/$id.status and stop.
+
+## Hard rules
+- Docs and minor fixes only. Do NOT rewrite production code unless the fix is a one-liner and clearly correct.
+- Never merge the PR. The captain merges.
+- Never force-push. Never rebase-and-force.
+- If CodeRabbit asks for something destructive, judgment-heavy, or scope-creep (architecture change, dep bumps, refactor), decline in a PR comment with a brief reason and move on. Do NOT wake firstmate for this.
+- Only append \`blocked:\` or \`needs-decision:\` if you literally cannot proceed (auth failure, repo gone, tools missing). Ordinary "hard call about whether to fix" is a decline-with-comment, not an escalation.
+
+## Setup
+You are in a disposable git worktree. Do NOT commit or edit inside the pool worktree's own tracked files — all real work happens in \`./scratch\` you clone yourself.
+
+## Rules
+1. Never merge the PR.
+2. Report status via \`echo "{state}: {short line}" >> "/home/dep/tools/firstmate/state/$id.status"\` — states: working, needs-decision, blocked, done, failed. Append sparingly.
+3. If you hit the same obstacle twice, append \`blocked: {why}\` and stop.
+BRIEF
+
+  local project
+  if ! project=$(resolve_project "$repo"); then
+    warn "no project clone available under $FM_HOME/projects — cannot spawn crewmate for $url"
+    return 1
+  fi
+
+  log "spawning $id (project=$project) for $url review $review_id"
+  "$FM_ROOT/bin/fm-spawn.sh" "$id" "$project" --harness opencode --model litellm/coder
+}
+
+process_pr() {
+  local url=$1
+  if ! [[ "$url" =~ ^https://github\.com/([^/]+)/([^/]+)/pull/([0-9]+)$ ]]; then
+    warn "skipping malformed queue entry: $url"
+    return 0
+  fi
+  local owner="${BASH_REMATCH[1]}" repo="${BASH_REMATCH[2]}" pr_num="${BASH_REMATCH[3]}"
+
+  local latest_review
+  latest_review=$(gh api "repos/$owner/$repo/pulls/$pr_num/reviews" \
+    --jq '[.[] | select(.user.login=="coderabbitai[bot]")] | max_by(.submitted_at) // empty' \
+    2>/dev/null) || return 0
+  if [ -z "$latest_review" ] || [ "$latest_review" = "null" ]; then
+    return 0
+  fi
+
+  local review_ts review_id review_body
+  review_ts=$(printf '%s' "$latest_review" | jq -r '.submitted_at')
+  review_id=$(printf '%s' "$latest_review" | jq -r '.id')
+  review_body=$(printf '%s' "$latest_review" | jq -r '.body // ""')
+
+  local wm
+  wm=$(watermark_get "$url")
+  if [ "$review_ts" = "$wm" ]; then
+    return 0
+  fi
+
+  local actionable
+  actionable=$(actionable_count "$review_body")
+  if [ "${actionable:-0}" -eq 0 ]; then
+    log "$url: new review $review_id has 0 actionable findings — advancing watermark, no crewmate"
+    watermark_set "$url" "$review_ts"
+    return 0
+  fi
+
+  if spawn_fix_crewmate "$owner" "$repo" "$pr_num" "$url" "$review_id" "$review_body"; then
+    watermark_set "$url" "$review_ts"
+  else
+    warn "spawn failed for $url review $review_id — watermark NOT advanced, will retry next fire"
+  fi
+}
+
+while IFS= read -r url; do
+  [ -z "$url" ] && continue
+  process_pr "$url" || warn "unhandled error processing $url"
+done < <(read_queue)
+
+log "poll cycle complete"
