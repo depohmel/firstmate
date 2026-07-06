@@ -132,9 +132,11 @@ The FULL review body is at $brief_dir/review.md — read it once, then decide wh
 5. For each actionable finding, verify against current code (files may have moved since the review), then either:
    - Fix it with a focused commit if the finding is still valid and the fix is uncontroversial (docs, one-line code, straightforward test tweak), OR
    - Decline it with a brief PR comment via \`gh pr comment $pr_num --repo $owner/$repo --body "..."\` if it is stylistic disagreement, out of scope, already addressed, or judgment-heavy.
-6. If you made commits, push: \`git push origin \$(git branch --show-current)\`. Then post a single summary PR comment listing which findings were fixed (with commit shas) and which were declined (with brief reasons).
-7. If you made NO commits (declined everything), still post one summary PR comment listing what was declined and why.
+6. If you made commits, push: \`git push origin \$(git branch --show-current)\`. Then post a single summary PR comment listing which findings were fixed (with commit shas) and which were declined (with brief reasons). AFTER that summary comment, request CodeRabbit re-review by posting a second comment: \`gh pr comment $pr_num --repo $owner/$repo --body "@coderabbitai review"\`. Do NOT ping \`@coderabbitai\` if you made no commits — a re-review with no code change wastes org quota.
+7. If you made NO commits (declined everything), still post one summary PR comment listing what was declined and why. Do NOT request re-review.
 8. Append \`done: <one-line summary>\` to /home/dep/tools/firstmate/state/$id.status and stop.
+
+CodeRabbit rate-limit note: the free-tier is 1 review per hour org-wide. If you post \`@coderabbitai review\` and CodeRabbit is within the cooldown, it will queue the request or respond with a countdown — that's fine, do NOT try to interpret or wait for the countdown yourself. Just post once and finish. The next hourly cron fire will pick up whatever CodeRabbit posts in response.
 
 ## Hard rules
 - Docs and minor fixes only. Do NOT rewrite production code unless the fix is a one-liner and clearly correct.
