@@ -33,7 +33,7 @@ Designed for CodeRabbit's free-tier org-wide rate limit (1 review per hour): the
 - Compares the review's `submitted_at` timestamp with the per-PR watermark in `state/coderabbit-watermarks.tsv`. If it matches, this review was already processed — skip.
 - Parses the review body for the CodeRabbit `Actionable comments posted: N` marker.
    - `N == 0`: advance the watermark, no crewmate. (CodeRabbit posted a "nothing to do" review.)
-   - `N > 0`: write the review body to `data/cr-<repo>-pr<n>-<review_id>/review.md`, scaffold a scoped brief, spawn a crewmate via `bin/fm-spawn.sh` on `opencode + litellm/coder`. On successful spawn, advance the watermark.
+   - `N > 0`: write the review body to `data/cr-<repo>-pr<n>-<review_id>/review.md`, scaffold a scoped brief, spawn a crewmate via `bin/fm-spawn.sh`. Harness comes from `FM_CODERABBIT_POLL_HARNESS` (default `opencode`); model comes from `FM_CODERABBIT_POLL_MODEL` (default: unset, so `fm-spawn` resolves through `config/crew-dispatch.json` and the harness's own default — no operator-specific tier name is baked into the script). On successful spawn, advance the watermark.
 - Releases the lock and exits.
 
 ## What the spawned crewmate does

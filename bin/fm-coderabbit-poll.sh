@@ -160,8 +160,21 @@ BRIEF
     return 1
   fi
 
+  # Harness and model come from environment; both are optional. When
+  # FM_CODERABBIT_POLL_HARNESS is unset, we default to `opencode` (public,
+  # part of any firstmate install). When FM_CODERABBIT_POLL_MODEL is unset,
+  # we do NOT pass --model at all, so fm-spawn resolves the model through
+  # its normal precedence chain (config/crew-dispatch.json, then the harness
+  # default). This keeps the script generic and avoids leaking any operator's
+  # private tier names or endpoints.
+  local harness_flag=(--harness "${FM_CODERABBIT_POLL_HARNESS:-opencode}")
+  local model_flag=()
+  if [ -n "${FM_CODERABBIT_POLL_MODEL:-}" ]; then
+    model_flag=(--model "$FM_CODERABBIT_POLL_MODEL")
+  fi
+
   log "spawning $id (project=$project) for $url review $review_id"
-  "$FM_ROOT/bin/fm-spawn.sh" "$id" "$project" --harness opencode --model litellm/coder
+  "$FM_ROOT/bin/fm-spawn.sh" "$id" "$project" "${harness_flag[@]}" "${model_flag[@]}"
 }
 
 process_pr() {
