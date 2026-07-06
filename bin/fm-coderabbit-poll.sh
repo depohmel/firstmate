@@ -185,11 +185,34 @@ process_pr() {
   fi
   local owner="${BASH_REMATCH[1]}" repo="${BASH_REMATCH[2]}" pr_num="${BASH_REMATCH[3]}"
 
+  # PR state: skip closed/merged so we do not consume the org's CodeRabbit
+  # quota requesting reviews on already-landed work.
+  local pr_state
+  pr_state=$(gh api "repos/$owner/$repo/pulls/$pr_num" --jq '.state' 2>/dev/null) || return 0
+  if [ "$pr_state" != "open" ]; then
+    log "$url: state=$pr_state, skipping"
+    return 0
+  fi
+
   local latest_review
   latest_review=$(gh api "repos/$owner/$repo/pulls/$pr_num/reviews" \
     --jq '[.[] | select(.user.login=="coderabbitai[bot]")] | max_by(.submitted_at) // empty' \
     2>/dev/null) || return 0
+
   if [ -z "$latest_review" ] || [ "$latest_review" = "null" ]; then
+    # No CodeRabbit review yet.  Request one, but only if we have not already
+    # done so this cycle (the free-tier quota is org-wide, so we can spend at
+    # most one review request per fire before waiting for the next hour).
+    if [ "${REVIEW_REQUESTED_THIS_CYCLE:-0}" -eq 0 ]; then
+      log "$url: no CodeRabbit review yet - requesting @coderabbitai review"
+      if gh pr comment "$pr_num" --repo "$owner/$repo" --body '@coderabbitai review' >/dev/null 2>&1; then
+        REVIEW_REQUESTED_THIS_CYCLE=1
+      else
+        warn "$url: failed to post @coderabbitai review request"
+      fi
+    else
+      log "$url: no review yet, but quota already spent this cycle - will retry next hour"
+    fi
     return 0
   fi
 
@@ -201,21 +224,23 @@ process_pr() {
   local wm
   wm=$(watermark_get "$url")
   if [ "$review_ts" = "$wm" ]; then
+    log "$url: review $review_id already processed (watermark match)"
     return 0
   fi
 
   local actionable
   actionable=$(actionable_count "$review_body")
   if [ "${actionable:-0}" -eq 0 ]; then
-    log "$url: new review $review_id has 0 actionable findings — advancing watermark, no crewmate"
+    log "$url: new review $review_id has 0 actionable findings - advancing watermark, no crewmate"
     watermark_set "$url" "$review_ts"
     return 0
   fi
 
+  log "$url: new review $review_id has $actionable actionable findings - dispatching crewmate"
   if spawn_fix_crewmate "$owner" "$repo" "$pr_num" "$url" "$review_id" "$review_body"; then
     watermark_set "$url" "$review_ts"
   else
-    warn "spawn failed for $url review $review_id — watermark NOT advanced, will retry next fire"
+    warn "$url: spawn failed for review $review_id - watermark NOT advanced, will retry next fire"
   fi
 }
 
