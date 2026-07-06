@@ -44,7 +44,8 @@ The brief tells it to:
 3. Read the CodeRabbit review body from disk (no re-fetch).
 4. For each actionable finding: verify against current code, then either fix with a focused commit OR decline with a brief PR comment.
 5. Push its commits and post a summary PR comment enumerating what it fixed vs declined.
-6. Report `done: <summary>` and stop.
+6. If any commits were pushed, request a re-review by posting `@coderabbitai review` as a second PR comment. Skipped when the crewmate declined every finding — a re-review with no diff wastes the org-wide quota.
+7. Report `done: <summary>` and stop.
 
 Explicit hard rules the crewmate obeys:
 
