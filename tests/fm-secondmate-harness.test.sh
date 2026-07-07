@@ -441,6 +441,18 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  # A crew/scout (non-secondmate) spawn acquires its worktree via
+  # `treehouse get --lease` and reads the leased path from stdout; print
+  # FM_FAKE_PANE_PATH for that invocation so the same stub serves both the
+  # secondmate spawns (which skip the lease) and the crew-unaffected case.
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  if [ "$arg" = "--lease" ]; then printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0; fi
+done
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
   printf '%s\n' "$fakebin"
 }
 
