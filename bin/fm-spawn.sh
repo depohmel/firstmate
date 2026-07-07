@@ -185,6 +185,7 @@ fi
 ORCA_ABORT_CLEANUP=0
 ORCA_WORKTREE_ID=
 ORCA_TERMINAL=
+LEASE_ABORT_CLEANUP=0
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -203,8 +204,14 @@ parse_orca_worktree_result() {
   fi
 }
 
-orca_spawn_abort_cleanup() {
+spawn_abort_cleanup() {
   local status=$?
+  if [ "$LEASE_ABORT_CLEANUP" = 1 ]; then
+    LEASE_ABORT_CLEANUP=0
+    if [ -n "${WT:-}" ] && command -v treehouse >/dev/null 2>&1; then
+      ( cd "${PROJ_ABS:-$WT}" 2>/dev/null && treehouse return --force "$WT" ) >/dev/null 2>&1 || true
+    fi
+  fi
   [ "$ORCA_ABORT_CLEANUP" = 1 ] || return "$status"
   ORCA_ABORT_CLEANUP=0
   if [ -n "${ORCA_TERMINAL:-}" ]; then
@@ -234,7 +241,7 @@ orca_spawn_abort_cleanup() {
   fi
   return "$status"
 }
-trap orca_spawn_abort_cleanup EXIT
+trap spawn_abort_cleanup EXIT
 
 # Batch dispatch (see header): when the first positional is an `id=repo` pair, treat every
 # positional as one and spawn each by re-execing this script in single-task mode. We use
@@ -641,24 +648,12 @@ fi
 
 # PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
 # /private/tmp) when it came from the ship/scout branch's logical `pwd` above.
-# Every backend's own current-path read (tmux's pane_current_path, herdr's
-# foreground_cwd, zellij/cmux's active pwd probe against the live shell) can
-# report the OS-level, physically-resolved cwd, so comparing it against a
-# still-symlinked PROJ_ABS can misfire both ways: false-negative (the poll
-# below never notices the pane left the project) or false-positive (the
-# isolation guard refuses a spawn that never actually tangled). Canonicalize
-# once here so every downstream comparison uses the same physical form
+# validate_spawn_worktree resolves the leased worktree with `pwd -P`, so a
+# still-symlinked PROJ_ABS would let the isolation guard misfire: a false
+# positive where it refuses a spawn that never actually tangled the primary.
+# Canonicalize once here so that comparison uses the same physical form
 # (docs/herdr-backend.md "Known gaps").
 PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_ABS"
-
-real_path_or_raw() {  # <path>
-  local path=$1 real
-  if real=$(cd "$path" 2>/dev/null && pwd -P); then
-    printf '%s\n' "$real"
-  else
-    printf '%s\n' "$path"
-  fi
-}
 
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
@@ -845,6 +840,7 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     echo "error: treehouse get --lease failed for $PROJ_ABS; inspect pool with 'treehouse status'" >&2
     exit 1
   fi
+  LEASE_ABORT_CLEANUP=1
   validate_spawn_worktree "treehouse get --lease" "$T"
   # Navigate the pane to the leased worktree. The window was created in
   # PROJ_ABS; send-keys ordering guarantees the cd completes before the
@@ -1020,6 +1016,7 @@ META_WINDOW=$T
     echo "projects=$SECONDMATE_PROJECTS"
   fi
 } > "$STATE/$ID.meta"
+LEASE_ABORT_CLEANUP=0
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")
