@@ -25,7 +25,18 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse gh-axi gh
+  # Fake treehouse: print the controlled worktree path for the "get --lease"
+  # acquisition (fm-spawn.sh reads the leased path from stdout now, rather than
+  # polling pane_current_path); exit 0 silently for any other invocation.
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  if [ "$arg" = "--lease" ]; then printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0; fi
+done
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
+  fm_fake_exit0 "$fakebin" gh-axi gh
   printf '%s\n' "$fakebin"
 }
 
