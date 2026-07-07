@@ -70,8 +70,7 @@ fm_brief_mind_map_ref() {
     printf '_(No project mind map exists yet.)_\n'
     return
   fi
-  local rel="${latest#$FM_HOME/}"
-  printf 'Before touching any file, read `%s` — a one-page map of the whole repo. It answers "where does X live?" faster than exploring the tree.\n' "$rel"
+  printf 'Before touching any file, read `%s` — a one-page map of the whole repo. It answers "where does X live?" faster than exploring the tree.\n' "$latest"
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
