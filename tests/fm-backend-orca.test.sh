@@ -687,7 +687,13 @@ test_spawn_releases_orca_resources_when_metadata_write_fails() {
     "$ROOT/bin/fm-spawn.sh" "$id" "$proj" claude --backend orca 2>&1 )
   status=$?
   [ "$status" -ne 0 ] || fail "Orca spawn should fail when metadata cannot be written"
-  assert_contains "$out" "File exists" "spawn should fail at the state directory creation point"
+  # The state override points at a regular file, so `mkdir -p "$STATE"` fails.
+  # Accept either coreutils flavor's wording (GNU: "File exists",
+  # uutils: "Already exists") so the check is portable across mkdir implementations.
+  case "$out" in
+    *"File exists"*|*"Already exists"*) : ;;
+    *) fail "spawn should fail at the state directory creation point: $out" ;;
+  esac
   assert_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''close'$'\x1f''--terminal'$'\x1f''term-meta-fail'$'\x1f''--json' \
     "Orca spawn should close the recorded terminal when a later abort occurs"
   assert_contains "$(cat "$LOG")" $'orca\x1f''worktree'$'\x1f''rm'$'\x1f''--worktree'$'\x1f''id:wt-meta-fail'$'\x1f''--force'$'\x1f''--json' \
