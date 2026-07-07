@@ -4,6 +4,13 @@ Periodic host-cron poll that watches a captain-maintained queue of GitHub PRs, d
 
 Designed for CodeRabbit's free-tier org-wide rate limit (1 review per hour): the poll runs hourly and spawns at most one crewmate per newly-posted actionable review.
 
+Supports both CodeRabbit variants:
+
+- `coderabbitai[bot]` — the paid/hosted service; requests posted as `@coderabbitai review`.
+- `coderabbit-oss[bot]` — the public OSS variant used on OSS repos, with stricter per-user rate limits; requests posted as `@coderabbit-oss review`.
+
+The poll auto-detects which bot is active on each PR from the most recent bot activity (review or issue comment) and mirrors the mention accordingly; a PR with no prior bot activity falls back to `@coderabbitai`.
+
 ## Setup
 
 1. Enable the queue:
@@ -32,7 +39,7 @@ Designed for CodeRabbit's free-tier org-wide rate limit (1 review per hour): the
 - For each PR:
   1. Checks the PR state via `gh api`. Skips anything that is not `open` (already merged or closed PRs do not need attention and any `@coderabbitai review` request would waste org quota).
   2. Queries the newest CodeRabbit review via `gh api /repos/<owner>/<repo>/pulls/<n>/reviews`.
-  3. **If there is NO CodeRabbit review yet on this PR**: post a `@coderabbitai review` comment to trigger the initial review — but at most ONCE per fire cycle. The free-tier CodeRabbit quota is one review-request per hour org-wide (tracked per user under `@`login), so requesting more than one per fire just wastes the quota. Remaining unreviewed PRs get requested on subsequent hourly fires until each has a review.
+  3. **If there is NO CodeRabbit review yet on this PR**: post an `@coderabbitai review` / `@coderabbit-oss review` comment (whichever variant is active on the PR) to trigger the initial review — but at most ONCE per fire cycle. The free-tier CodeRabbit quota is one review-request per hour org-wide (tracked per user under `@`login), so requesting more than one per fire just wastes the quota. Remaining unreviewed PRs get requested on subsequent hourly fires until each has a review. Before posting, the newest bot issue comment on the PR is scanned for a `Review limit reached` cooldown notice; if one is present the request is skipped (with a log line noting any parseable countdown) so we do not burn a queued-request slot every hour while CodeRabbit is in cooldown.
   4. **If there IS a review**: compares its `submitted_at` timestamp with the per-PR watermark in `state/coderabbit-watermarks.tsv`. If it matches, the review was already processed — skip.
   5. **If the review is new**: parses the body for the `Actionable comments posted: N` marker.
      - `N == 0`: advance the watermark, no crewmate. (CodeRabbit posted a "nothing to do" review.)

@@ -88,6 +88,63 @@ actionable_count() {
     || printf '0'
 }
 
+# CodeRabbit ships two bot users: coderabbitai[bot] (paid) and coderabbit-oss[bot]
+# (public OSS variant, per-user rate limits).  Match either everywhere so the
+# poll serves both a captain's own repos and OSS repos they contribute to.
+BOT_JQ_FILTER='.user.login=="coderabbitai[bot]" or .user.login=="coderabbit-oss[bot]"'
+
+# Turn a bot login into the @mention handle used to request a review.
+mention_for_bot() {
+  case "$1" in
+    "coderabbit-oss[bot]") printf '@coderabbit-oss' ;;
+    *) printf '@coderabbitai' ;;
+  esac
+}
+
+# Look at the newest bot activity on the PR (review OR issue comment) and
+# report which bot to talk to.  Fallback: paid coderabbitai[bot], matching the
+# historical default before the OSS variant existed.
+detect_bot_login() {
+  local owner=$1 repo=$2 pr_num=$3
+  local latest login
+  latest=$(gh api "repos/$owner/$repo/issues/$pr_num/comments" \
+    --jq "[.[] | select($BOT_JQ_FILTER)] | max_by(.created_at) // empty" \
+    2>/dev/null) || true
+  if [ -n "$latest" ] && [ "$latest" != "null" ]; then
+    login=$(printf '%s' "$latest" | jq -r '.user.login')
+    if [ -n "$login" ] && [ "$login" != "null" ]; then
+      printf '%s' "$login"
+      return 0
+    fi
+  fi
+  printf 'coderabbitai[bot]'
+}
+
+# Check the newest bot issue comment for CodeRabbit's "Review limit reached"
+# cooldown notice.  Prints a short human note to stdout and returns 0 when
+# cooldown is active (caller should skip the request); returns 1 when clear.
+bot_cooldown_active() {
+  local owner=$1 repo=$2 pr_num=$3
+  local comment body countdown
+  comment=$(gh api "repos/$owner/$repo/issues/$pr_num/comments" \
+    --jq "[.[] | select($BOT_JQ_FILTER)] | max_by(.created_at) // empty" \
+    2>/dev/null) || return 1
+  if [ -z "$comment" ] || [ "$comment" = "null" ]; then
+    return 1
+  fi
+  body=$(printf '%s' "$comment" | jq -r '.body // ""')
+  if ! printf '%s' "$body" | grep -qi 'Review limit reached'; then
+    return 1
+  fi
+  countdown=$(printf '%s' "$body" | grep -oiE '[0-9]+ (minute|hour|second)s?' | head -1 || true)
+  if [ -n "$countdown" ]; then
+    printf 'next review available in %s' "$countdown"
+  else
+    printf 'cooldown active'
+  fi
+  return 0
+}
+
 # Find a firstmate project clone that matches the target repo, or fall back to
 # any project (the crewmate does real work in a scratch clone regardless).
 resolve_project() {
@@ -196,7 +253,7 @@ process_pr() {
 
   local latest_review
   latest_review=$(gh api "repos/$owner/$repo/pulls/$pr_num/reviews" \
-    --jq '[.[] | select(.user.login=="coderabbitai[bot]")] | max_by(.submitted_at) // empty' \
+    --jq "[.[] | select($BOT_JQ_FILTER)] | max_by(.submitted_at) // empty" \
     2>/dev/null) || return 0
 
   if [ -z "$latest_review" ] || [ "$latest_review" = "null" ]; then
@@ -204,11 +261,21 @@ process_pr() {
     # done so this cycle (the free-tier quota is org-wide, so we can spend at
     # most one review request per fire before waiting for the next hour).
     if [ "${REVIEW_REQUESTED_THIS_CYCLE:-0}" -eq 0 ]; then
-      log "$url: no CodeRabbit review yet - requesting @coderabbitai review"
-      if gh pr comment "$pr_num" --repo "$owner/$repo" --body '@coderabbitai review' >/dev/null 2>&1; then
+      # Skip when CodeRabbit itself just told us it is in cooldown -
+      # otherwise every hourly fire burns a queued-request slot for nothing.
+      local cooldown
+      if cooldown=$(bot_cooldown_active "$owner" "$repo" "$pr_num"); then
+        log "$url: CodeRabbit cooldown - $cooldown, skipping request"
+        return 0
+      fi
+      local bot_login mention
+      bot_login=$(detect_bot_login "$owner" "$repo" "$pr_num")
+      mention=$(mention_for_bot "$bot_login")
+      log "$url: no CodeRabbit review yet - requesting $mention review"
+      if gh pr comment "$pr_num" --repo "$owner/$repo" --body "$mention review" >/dev/null 2>&1; then
         REVIEW_REQUESTED_THIS_CYCLE=1
       else
-        warn "$url: failed to post @coderabbitai review request"
+        warn "$url: failed to post $mention review request"
       fi
     else
       log "$url: no review yet, but quota already spent this cycle - will retry next hour"
