@@ -69,11 +69,13 @@ shell_quote() {
 fm_brief_mind_map_ref() {
   local repo=$1
   local latest
+  # shellcheck disable=SC2012  # ls -t is deliberate: portable newest-by-mtime pick (find -printf is GNU-only; firstmate also runs on macOS), and timestamped report.md paths carry no newlines.
   latest=$(ls -t "$FM_HOME/data/${repo}-mind-map-"*/report.md 2>/dev/null | head -1)
   if [ -z "$latest" ]; then
     printf '_(No project mind map exists yet.)_\n'
     return
   fi
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal markdown and %s is the printf directive for "$latest".
   printf 'Before touching any file, read `%s` — a one-page map of the whole repo. It answers "where does X live?" faster than exploring the tree.\n' "$latest"
 }
 
