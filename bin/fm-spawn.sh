@@ -802,14 +802,6 @@ spawn_send_text_line() {  # <target> <text>
     cmux) fm_backend_cmux_send_text_line "$1" "$2" "$W" ;;
   esac
 }
-spawn_current_path() {  # <target>
-  case "$BACKEND" in
-    tmux) fm_backend_tmux_current_path "$1" ;;
-    herdr) fm_backend_herdr_current_path "$1" ;;
-    zellij) fm_backend_zellij_current_path "$1" "$W" ;;
-    cmux) fm_backend_cmux_current_path "$1" "$W" ;;
-  esac
-}
 spawn_send_literal() {  # <target> <text>
   case "$BACKEND" in
     tmux) fm_backend_tmux_send_literal "$1" "$2" ;;
@@ -828,31 +820,44 @@ spawn_send_key() {  # <target> <key>
     cmux) fm_backend_cmux_send_key "$1" "$2" "$W" ;;
   esac
 }
+spawn_current_path() {  # <target>
+  case "$BACKEND" in
+    tmux) fm_backend_tmux_current_path "$1" ;;
+    herdr) fm_backend_herdr_current_path "$1" ;;
+    zellij) fm_backend_zellij_current_path "$1" "$W" ;;
+    cmux) fm_backend_cmux_current_path "$1" "$W" ;;
+  esac
+}
 if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
-
-  # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
-  # Target the stable window id, not the name: if the name is ever lost (e.g. an
-  # automatic-rename slips through), display-message -t <bad-name> falls back to the
-  # active client's window, which would misread firstmate's OWN pane path as the
-  # worktree and tangle a hook into the primary checkout. The window id never lies.
-  # Compare against PROJ_ABS_REAL (physical), not PROJ_ABS: a symlinked project
-  # prefix would otherwise make the pane's OS-level cwd read differ from
-  # PROJ_ABS on the very first poll, before the pane has actually moved.
-  for _ in $(seq 1 60); do
-    p=$(spawn_current_path "$WT_TARGET" || true)
-    if [ -n "$p" ] && [ "$(real_path_or_raw "$p")" != "$PROJ_ABS_REAL" ]; then
-      WT="$p"
-      break
-    fi
-    sleep 1
-  done
-  if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter a worktree within 60s; inspect window $T" >&2
+  # Acquire a durable treehouse lease from this script so the recorded worktree
+  # path is always what treehouse actually leased, not the pane's observed CWD.
+  #
+  # The previous approach sent "treehouse get" to the pane and polled
+  # pane_current_path for up to 60 s. That poll has a race: if the pane's
+  # initial CWD (set by the backend window-creation -c flag) differs from
+  # PROJ_ABS_REAL at the instant of the very first poll — e.g. because tmux
+  # fell back to its session start-directory (FM_HOME) when the project dir
+  # was momentarily inaccessible — the loop breaks immediately with WT set to
+  # that wrong path before treehouse has moved the pane at all.
+  # validate_spawn_worktree then passes silently (FM_HOME is a valid git root
+  # distinct from PROJ_ABS), so meta records the wrong worktree=, the claude
+  # Stop hook is installed into the primary checkout instead of the isolated
+  # worktree, and teardown fails with "not managed by treehouse".
+  #
+  # treehouse get --lease is non-interactive: it marks the worktree durably
+  # and prints only its absolute path to stdout (all banners go to stderr).
+  # teardown's existing "treehouse return --force" call releases the lease,
+  # handling both leased and subshell-managed worktrees identically.
+  if ! WT=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "fm-$ID" 2>/dev/null) \
+      || [ -z "$WT" ]; then
+    echo "error: treehouse get --lease failed for $PROJ_ABS; inspect pool with 'treehouse status'" >&2
     exit 1
   fi
-
-  validate_spawn_worktree "treehouse get" "$T"
+  validate_spawn_worktree "treehouse get --lease" "$T"
+  # Navigate the pane to the leased worktree. The window was created in
+  # PROJ_ABS; send-keys ordering guarantees the cd completes before the
+  # GOTMPDIR export and the agent launch command that follow.
+  spawn_send_text_line "$T" "cd $(shell_quote "$WT")"
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
