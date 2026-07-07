@@ -6,6 +6,10 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
+# Ordinary ship and scout briefs open with a project mind-map reference section:
+# when the newest data/<repo>-mind-map-*/report.md exists under the active home,
+# it points the crewmate at that whole-repo map to read first; otherwise the
+# section notes that none exists yet. Secondmate charters have no such section.
 # Usage: fm-brief.sh <task-id> <repo-name> [--scout]
 #        fm-brief.sh <task-id> --secondmate <project>...
 #   --scout writes the scout contract instead: the deliverable is a report at
