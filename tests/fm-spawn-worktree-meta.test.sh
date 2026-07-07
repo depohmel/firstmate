@@ -47,7 +47,7 @@ SH
 # worktree= line in meta must equal the path treehouse returned, not FM_HOME.
 test_worktree_meta_records_lease_path() {
   local id home proj wt fakebin out status wt_in_meta
-  id=wt-meta-lease-z1
+  id="wt-meta-lease-z1"
   home="$TMP_ROOT/home-$id"
   proj="$TMP_ROOT/proj-$id"
   wt="$TMP_ROOT/wt-$id"
@@ -86,7 +86,7 @@ test_worktree_meta_records_lease_path() {
 # returns empty (e.g. pool exhausted), spawn exits non-zero with a useful error.
 test_spawn_fails_gracefully_when_lease_fails() {
   local id home proj wt fakebin_dir fakebin out status
-  id=wt-meta-fail-z2
+  id="wt-meta-fail-z2"
   home="$TMP_ROOT/home-$id"
   proj="$TMP_ROOT/proj-$id"
   wt="$TMP_ROOT/wt-$id"
@@ -132,7 +132,7 @@ SH
 # lease must be returned on exit so the pool slot is not leaked forever.
 test_lease_released_when_validation_aborts() {
   local id home proj bad fakebin_dir fakebin out status
-  id=wt-meta-leak-z3
+  id="wt-meta-leak-z3"
   home="$TMP_ROOT/home-$id"
   proj="$TMP_ROOT/proj-$id"
   bad="$TMP_ROOT/bad-$id"
