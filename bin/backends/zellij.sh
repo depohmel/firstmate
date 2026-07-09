@@ -381,8 +381,9 @@ fm_backend_zellij_target_ready() {  # <target> [expected-label]
 }
 
 # fm_backend_zellij_current_path: the live pane's cwd, or empty on any error.
-# Mirrors tmux's pane_current_path poll used for worktree-path discovery after
-# `treehouse get`.
+# Written for fm-spawn.sh's old worktree-path-discovery poll after
+# `treehouse get`; that poll now leases the worktree directly, so this has no
+# live caller and is retained as the backend's cwd-read primitive.
 #
 # Verified pitfall (docs/zellij-backend.md "Worktree-path discovery: pane_cwd
 # does not track a subshell"): `list-panes --json`'s `pane_cwd` DOES reflect a
@@ -395,10 +396,11 @@ fm_backend_zellij_target_ready() {  # <target> [expected-label]
 # (unlike herdr's `foreground_cwd`), so passive JSON polling cannot solve
 # this. Active probe instead: print the pane's `$PWD` with a unique marker
 # (atomically submitted, mirroring send_text_line), briefly settle, then capture
-# and read only that marker line. Scoped to fm-spawn.sh's own worktree-discovery
-# poll loop (the only caller of this op), where injecting a harmless extra
-# command before the harness ever launches is an acceptable trade for a reliable
-# answer.
+# and read only that marker line. Written for fm-spawn.sh's own
+# worktree-discovery poll loop, its only caller, where injecting a harmless
+# extra command before the harness ever launched was an acceptable trade for a
+# reliable answer; fm-spawn.sh now leases the worktree directly, so this op
+# currently has no live caller.
 fm_backend_zellij_current_path() {  # <target> [expected-label]
   local target=$1 expected_label=${2:-} out line marker_begin="__FM_ZELLIJ_CWD_BEGIN__" marker_end="__FM_ZELLIJ_CWD_END__" in_block=0 chunk="" last=""
   fm_backend_zellij_target_ready "$target" "$expected_label" || return 0
@@ -461,8 +463,9 @@ fm_backend_zellij_send_key() {  # <target> <key> [expected-label]
 
 # fm_backend_zellij_send_text_line: send one line of TEXT then submit,
 # ATOMICALLY - mirrors tmux's `send-keys -t T text Enter` / herdr's `pane
-# run`. Used for the fixed spawn-time commands (treehouse get, the GOTMPDIR
-# export). Zellij has no single-call atomic "run and submit" action, so this
+# run`. Used for the fixed spawn-time commands (the `cd` into the leased
+# worktree, the GOTMPDIR export). Zellij has no single-call atomic "run and
+# submit" action, so this
 # composes paste (literal) + send-keys Enter, exactly like send_literal +
 # send_key are composed elsewhere - the two-step form is the ONLY form for
 # this adapter, unlike tmux/herdr which have a genuinely atomic primitive.
