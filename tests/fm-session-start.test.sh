@@ -193,6 +193,10 @@ SH
 # (no ambient markers) still passes.
 run_session_start() {
   local home=$1 root=$2 path=$3
+  # Neutralize ambient harness env markers so detection relies on the fake-ps
+  # ancestry these tests install. Otherwise a run under a real harness (e.g.
+  # Claude Code sets CLAUDECODE=1) would short-circuit detect_own's env layer
+  # and defeat FM_FAKE_HARNESS.
   env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
     "$SESSION_START"
