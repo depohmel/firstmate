@@ -198,7 +198,7 @@ run_session_start() {
   # Claude Code sets CLAUDECODE=1) would short-circuit detect_own's env layer
   # and defeat FM_FAKE_HARNESS.
   FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
-    CLAUDECODE= PI_CODING_AGENT= GROK_AGENT= "$SESSION_START"
+    CLAUDECODE='' PI_CODING_AGENT='' GROK_AGENT='' "$SESSION_START"
 }
 
 hash_file_for_test() {
