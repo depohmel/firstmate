@@ -229,6 +229,7 @@ Verified live, step by step, mirroring the exact test that caught this for zelli
 This is the same shape zellij's `pane_cwd` has, not herdr's live-tracking `foreground_cwd`.
 **Workaround, `fm_backend_cmux_current_path`:** reuses zellij's own active pwd-marker-probe technique verbatim in spirit - submit a begin marker, `pwd`, and an end marker via `send_text_line`, briefly settle, capture, and read only the lines between the markers.
 Verified against the real binary in both shapes: a direct `cd` in the surface's own shell, and a nested subshell's own `cd` (the load-bearing case matching `treehouse get`'s actual shape) - both confirmed correct in `tests/fm-backend-cmux-smoke.test.sh`.
+This op was written for `fm-spawn.sh`'s own worktree-discovery poll loop; `fm-spawn.sh` now acquires the worktree directly via `treehouse get --lease` and no longer calls it, so it currently has no live caller and is retained as the backend's cwd-read primitive.
 
 ## Closing the last surface: a third shape (unanticipated finding)
 
