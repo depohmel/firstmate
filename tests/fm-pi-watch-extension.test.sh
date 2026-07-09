@@ -81,7 +81,18 @@ test_spawn_template_mentions_pi_watch_placeholder() {
 }
 
 test_pi_extension_reports_external_healthy_watcher() {
-  local repo home out status
+  local repo home out status probe
+  # This subtest executes the generated Pi extension, which is TypeScript. Node
+  # can only import a .ts module when it was built with type-stripping support;
+  # a node built without it (ERR_UNKNOWN_FILE_EXTENSION / ERR_NO_TYPESCRIPT)
+  # cannot load the extension at all. Skip cleanly on such a node, matching the
+  # other capability guards in this suite.
+  probe="$TMP_ROOT/pi-ts-probe.ts"
+  printf 'const _x: number = 1;\nexport default _x;\n' > "$probe"
+  if ! PROBE="$probe" node --input-type=module -e 'import { pathToFileURL } from "node:url"; await import(pathToFileURL(process.env.PROBE).href);' >/dev/null 2>&1; then
+    pass "Pi extension external-healthy check skipped (node lacks TypeScript type stripping)"
+    return
+  fi
   repo="$TMP_ROOT/pi-external-healthy-root"
   home="$TMP_ROOT/pi-external-healthy-home"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
