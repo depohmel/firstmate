@@ -436,7 +436,8 @@ fm_backend_cmux_target_ready() {  # <target> [expected-label]
 # polling cannot solve this here any more than it could for zellij. Active
 # probe instead: print the surface's `$PWD` with a unique marker (atomically
 # submitted via send_text_line), briefly settle, then capture and read only
-# that marker line. Scoped to fm-spawn.sh's own worktree-discovery poll loop.
+# that marker line. Written for fm-spawn.sh's own worktree-discovery poll loop,
+# which now leases the worktree directly, so this currently has no live caller.
 fm_backend_cmux_current_path() {  # <target> [expected-label]
   local target=$1 expected_label=${2:-} out line marker_begin="__FM_CMUX_CWD_BEGIN__" marker_end="__FM_CMUX_CWD_END__" in_block=0 chunk="" last=""
   fm_backend_cmux_target_ready "$target" "$expected_label" || return 0
@@ -496,8 +497,8 @@ fm_backend_cmux_send_key() {  # <target> <key> [expected-label]
 # fm_backend_cmux_send_text_line: send one line of TEXT then submit. cmux has
 # no single-call atomic "run and submit" primitive (like herdr's `pane run`),
 # so this composes send (literal) + send-key enter, exactly like zellij's
-# equivalent - used for the fixed spawn-time commands (treehouse get, the
-# GOTMPDIR export).
+# equivalent - used for the fixed spawn-time commands (the `cd` into the leased
+# worktree, the GOTMPDIR export).
 fm_backend_cmux_send_text_line() {  # <target> <text> [expected-label]
   fm_backend_cmux_send_literal "$1" "$2" "${3:-}" || return 1
   fm_backend_cmux_send_key "$1" Enter "${3:-}"
