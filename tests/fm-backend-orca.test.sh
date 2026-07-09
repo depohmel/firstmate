@@ -9,7 +9,7 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-backend-orca-tests)
 
 make_orca_fakebin() {  # <dir> -> echoes fakebin dir
-  local dir=$1 fb="$1/fakebin"
+  local fb="$1/fakebin"
   mkdir -p "$fb"
   cat > "$fb/orca" <<'SH'
 #!/usr/bin/env bash
@@ -49,7 +49,7 @@ orca_case() {  # <name> -> sets CASE_DIR LOG RESP FB
 }
 
 neutral_fm_root() {  # <dir> -> echoes a minimal root with a quiet guard
-  local dir=$1 root="$1/root"
+  local root="$1/root"
   mkdir -p "$root/bin"
   cat > "$root/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
