@@ -33,6 +33,17 @@ if [ -f "$META" ]; then
   fi
 fi
 
+# Append PR to CodeRabbit review queue (idempotent).
+_data="${FM_HOME:-${FM_ROOT}}/data"
+_queue="$_data/coderabbit-queue.txt"
+_is_pr='^https://github.com/[^/]+/[^/]+/pull/[0-9]+$'
+if [ -f "$_queue" ] && printf '%s\n' "$URL" | grep -qE "$_is_pr"; then
+  if ! grep -qxF "$URL" "$_queue"; then
+    echo "$URL" >> "$_queue"
+    echo "added: $URL to coderabbit review queue"
+  fi
+fi
+
 cat > "$STATE/$ID.check.sh" <<EOF
 state=\$(gh pr view "$URL" --json state -q .state 2>/dev/null)
 [ "\$state" = "MERGED" ] && echo "merged"
