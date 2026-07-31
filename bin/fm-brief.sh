@@ -260,6 +260,7 @@ $HERDR_SECTION
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
 This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
+Never set git identity - pooled treehouse worktrees share one .git/config, so overriding user.name/user.email corrupts sibling worktrees' commits; identity comes from global config.
 The report is the only thing that survives, so anything worth keeping must be in it.
 
 # Rules
@@ -285,8 +286,10 @@ The report is the only thing that survives, so anything worth keeping must be in
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
 # Definition of done
-Write your findings to \`$DATA/$ID/report.md\`.
+Write your findings to the ABSOLUTE path \`$DATA/$ID/report.md\` - the same path \`bin/fm-teardown.sh\` checks.
+A relative \`data/$ID/report.md\` resolves inside this scratch worktree and is DESTROYED at teardown; firstmate's refuse saved a report once only because the path was wrong the first time.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
+Quote ACTUAL output, not a summary: "Successfully processed the input" is a summary, "I see red on the left and blue on the right" is evidence. If a test was not run, say so - UNKNOWN is acceptable and a fabricated VERIFIED is a task failure.
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
@@ -311,6 +314,8 @@ case "$MODE" in
 This project ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
+Any PR comment must use \`gh-axi ... --body-file\`: backticks inside double-quoted shell arguments get mangled by command substitution.
+Before reporting \`done: PR {url}\`, prove the fix is committed: \`git status --porcelain\` must be clean, \`git log --oneline -1\` must show your new commit, and the fixed content must be confirmed present on the PR head.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
     ;;
@@ -322,6 +327,7 @@ EOF
 This project ships **local-only**: no remote, no PR, no pipeline.
 The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
+Before reporting \`done: ready in branch fm/$ID\`, prove the fix is committed: \`git status --porcelain\` must be clean and \`git log --oneline -1\` must show your new commit.
 When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
@@ -345,7 +351,10 @@ Two firstmate-specific rules layer on top of that guidance:
   Firstmate applies the authority contract in its \`AGENTS.md\` and obtains any required captain decision.
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
+- For a "missing X" ask-user finding, search the whole package and RUN the tests before escalating: if the item exists (e.g. tests in \`sandbox_test.go\` not the obvious \`agent_test.go\`), respond \`approve\` citing file and test names as evidence - answering \`fix\` on a false block wastes an entire fix round.
 
+Any PR comment must use \`gh-axi ... --body-file\`: backticks inside double-quoted shell arguments get mangled by command substitution.
+Before reporting \`done: PR {url} checks green\`, prove the fix is committed: \`git status --porcelain\` must be clean, \`git log --oneline -1\` must show your new commit, and the fixed content must be confirmed present on the PR head.
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
 EOF
     ;;
@@ -372,6 +381,7 @@ The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
+Never set git identity inside the worktree - pooled worktrees share one .git/config, so overriding user.name/user.email corrupts sibling worktrees' commits; identity comes from global config.
 
 # Rules
 $RULE1

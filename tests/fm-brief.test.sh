@@ -618,6 +618,52 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# Hardening for the 2026-07-30/31 crew-failure modes: each item is a real incident
+# folded into the generated brief text so future crewmates get it without firstmate
+# having to remember.
+test_scout_hardening_items() {
+  local home id brief
+  home="$TMP_ROOT/scout-hardening-home"
+  mkdir -p "$home/data"
+  id="brief-scout-hardening-z1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "scout brief was not scaffolded"
+  # Item 1: report path must be absolute, relative paths are destroyed
+  assert_grep "ABSOLUTE path" "$brief" "scout brief must warn the report path is absolute"
+  assert_grep "DESTROYED at teardown" "$brief" "scout brief must warn relative paths are lost"
+  assert_grep "$home/data/$id/report.md" "$brief" "scout brief must contain the absolute report path"
+  # Item 2: actual output, not summaries; UNKNOWN is acceptable, fabricated VERIFIED is not
+  assert_grep "Quote ACTUAL output" "$brief" "scout brief must require actual output, not summaries"
+  assert_grep "VERIFIED is a task failure" "$brief" "scout brief must forbid fabricated VERIFIED"
+  # Item 6: never set git identity
+  assert_grep "Never set git identity" "$brief" "scout brief must forbid setting git identity"
+  pass "fm-brief.sh: scout hardening covers absolute path, evidence, and git identity"
+}
+
+test_ship_hardening_items() {
+  local home id brief
+  home="$TMP_ROOT/ship-hardening-home"
+  mkdir -p "$home/data"
+  id="brief-ship-hardening-z2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "ship brief was not scaffolded"
+  # Item 3: prove the fix is committed before reporting green
+  assert_grep "git status --porcelain" "$brief" "ship brief must require clean git status before green"
+  assert_grep "git log --oneline -1" "$brief" "ship brief must require new commit confirmation"
+  # Item 4: verify a missing-X gate finding before obeying it
+  assert_grep "sandbox_test.go" "$brief" "ship brief must give a concrete false-block example"
+  assert_grep "agent_test.go" "$brief" "ship brief must name the non-obvious test file"
+  assert_grep "citing file and test names as evidence" "$brief" "ship brief must allow approving false gate blocks"
+  assert_grep "false block wastes an entire fix round" "$brief" "ship brief must warn about fix-round waste on false blocks"
+  # Item 5: PR comment bodies go in a file, not inline
+  assert_grep "backticks inside double-quoted shell arguments get mangled" "$brief" "ship brief must require --body-file for PR comments"
+  # Item 6: never set git identity
+  assert_grep "Never set git identity" "$brief" "ship brief must forbid setting git identity"
+  pass "fm-brief.sh: ship hardening covers commit proof, gate findings, body-file, and git identity"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -635,3 +681,5 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
+test_scout_hardening_items
+test_ship_hardening_items
