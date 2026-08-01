@@ -42,8 +42,24 @@
 #     lost. Crewmates are autonomous, so a delayed stale response does not stall
 #     a healthy crewmate's own progress.
 #     Buffered escalation delivery also has a max-defer alarm: if a digest stays
-#     undelivered past FM_MAX_DEFER_SECS, the daemon retries a normal flush and
-#     writes state/.subsuper-inject-wedged if submit still cannot be confirmed.
+#     Buffered escalation delivery has two escape tiers that MUST actually escape
+#     (the prior version retried the exact inject_msg that was stuck on a
+#     detector false positive, producing a retry loop dressed as an escape - the
+#     root cause of the 9.4h afk-invx-i5 blackout):
+#       Tier 1 (FM_MAX_DEFER_SECS): past the defer ceiling, force-pending delivery
+#         bypasses ONLY the composer guard (pane_input_pending) while still
+#         respecting the busy guard (pane_is_busy). A composer that stays
+#         "pending" past this ceiling is overwhelmingly a false positive - a
+#         human does not hold a half-typed line this long - so the escape
+#         delivers. Worst case the digest merges into a stale draft line; best
+#         case it ends a multi-hour blackout. If that still cannot land (pane
+#         busy), the existing max-defer wedge alarm fires.
+#       Tier 2 (FM_FORCE_INJECT_SECS, hard ceiling): past the hard ceiling,
+#         force-ALL delivery bypasses BOTH guards. A supervisor legitimately busy
+#         for 30 unbroken minutes while escalations queue is itself the
+#         emergency. If even force-all cannot land (pane gone / submit error), a
+#         loud alarm reaches outside the wedged pane (state/AFK-WEDGED.txt +
+#         desktop notification) instead of an in-pane-only marker.
 #   - Cheap heartbeat catch-all: every HEARTBEAT_SCAN_SECS the daemon greps all
 #     state/*.status for a captain-relevant line the per-wake classifier might
 #     have missed (e.g. a status verb outside CAPTAIN_RE) and escalates it.
@@ -92,9 +108,19 @@
 #                                   and structural border stripping (default:
 #                                   bare prompt glyphs plus busy footers)
 #          FM_MAX_DEFER_SECS        max seconds a buffered escalation may sit
-#                                   undelivered before one normal flush attempt;
-#                                   if that cannot confirm a submit, a wedge
-#                                   alarm fires (default 300; 0 disables)
+#                                   undelivered before one force-pending flush
+#                                   attempt (bypasses the composer guard, still
+#                                   respects the busy guard); if that cannot
+#                                   confirm a submit, a wedge alarm fires
+#                                   (default 300; 0 disables)
+#          FM_FORCE_INJECT_SECS     hard ceiling: once the oldest buffered
+#                                   escalation exceeds this, deliver regardless
+#                                   of BOTH the busy and composer guards. A
+#                                   supervisor busy for this long while
+#                                   escalations queue is itself the emergency;
+#                                   if even force delivery cannot land, a loud
+#                                   alarm reaches outside the wedged pane
+#                                   (default 1800; 0 disables)
 #          FM_INJECT_CONFIRM_RETRIES Enter-retry attempts on a swallowed Enter
 #                                   (default 3); the digest is typed once, only
 #                                   Enter is retried. Composer-empty detection is
@@ -122,9 +148,11 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # + verify-retry submit). Sourced at top level so BOTH the executed daemon and
 # the unit tests (which source this file for its pure functions) get the
 # corrected composer detection. Stale task rechecks use fm-backend.sh below.
+# shellcheck disable=SC1091
 # shellcheck source=bin/fm-tmux-lib.sh
 . "$FM_DAEMON_DIR/fm-tmux-lib.sh"
 
+# shellcheck disable=SC1091
 # shellcheck source=bin/fm-backend.sh
 . "$FM_DAEMON_DIR/fm-backend.sh"
 
@@ -132,6 +160,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # window_to_task, scan_captain_relevant_statuses). The SAME library backs the
 # always-on watcher's triage, so the captain-relevant verb set and the
 # classification predicates have exactly one definition.
+# shellcheck disable=SC1091
 # shellcheck source=bin/fm-classify-lib.sh
 . "$FM_DAEMON_DIR/fm-classify-lib.sh"
 
@@ -156,9 +185,14 @@ ESCALATE_BATCH_SECS_DEFAULT=90
 HEARTBEAT_SCAN_SECS_DEFAULT=300
 HOUSEKEEPING_TICK_DEFAULT=15
 # Max time a buffered escalation may sit undelivered before the daemon retries
-# the normal flush path and, if that cannot confirm a submit, raises a loud wedge
-# alarm. The escape hatch makes a guard false-positive visible instead of silent.
+# the normal flush path with force-pending delivery (bypassing the composer
+# guard only); if that cannot confirm a submit, a loud wedge alarm fires.
 MAX_DEFER_SECS_DEFAULT=300
+# Hard ceiling: past this, force-ALL delivery bypasses BOTH the busy and
+# composer guards. A supervisor busy this long while escalations queue is
+# the emergency; if even force delivery cannot land, an alarm reaches outside
+# the wedged pane (AFK-WEDGED.txt + notify).
+FORCE_INJECT_SECS_DEFAULT=1800
 # The captain-relevant verb set and the status classifiers (last_status_line,
 # status_is_captain_relevant, window_to_task, scan_captain_relevant_statuses) now
 # live in bin/fm-classify-lib.sh, shared with the always-on watcher.
@@ -537,8 +571,14 @@ escalate_add() {  # <state> <distilled-item>
 # Flush the escalation buffer as ONE batched, single-line digest to the
 # supervisor pane. Returns 0 on successful inject (or empty buffer), non-zero on
 # inject failure (buffer preserved for retry / catch-up).
-escalate_flush() {  # <state>
-  local state=$1 buf item n msg
+escalate_flush() {  # <state> [force]
+  # force: optional "force-pending" (bypass the composer guard only) or
+  # "force-all" (bypass both the busy and composer guards). Used ONLY by the
+  # max-defer (tier 1) and hard-ceiling (tier 2) escapes so a stuck
+  # pane_input_pending false positive cannot blackout escalations. The normal
+  # path passes no force and keeps all guards.
+  local state=$1 force buf item n msg
+  force="${2:-}"
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || return 0
   n=$(wc -l < "$buf" 2>/dev/null || echo 0)
@@ -547,7 +587,7 @@ escalate_flush() {  # <state>
   # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
   # safety net, but keeping the source single-line makes the intent explicit).
   msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
-  if inject_msg "$msg" "$state"; then : > "$buf"; rm -f "${buf}.since" "$state/.subsuper-inject-wedged"; return 0; fi
+  if inject_msg "$msg" "$state" "$force"; then : > "$buf"; rm -f "${buf}.since" "$state/.subsuper-inject-wedged" "$state/AFK-WEDGED.txt"; return 0; fi
   return 1
 }
 
@@ -581,6 +621,40 @@ inject_wedge_alarm() {  # <state> <age-seconds>
   fi
 }
 
+# inject_hard_ceiling_alarm: the LAST-resort alarm, fired only when force-ALL
+# delivery past FM_FORCE_INJECT_SECS still cannot land (the supervisor pane is
+# genuinely gone, or the submit primitive itself errors). Unlike the tier-1
+# wedge alarm — which lives in the daemon log + a durable marker that the SAME
+# wedged pane is the only reader of — this one reaches OUTSIDE the wedged pane:
+# it writes a top-level state/AFK-WEDGED.txt the captain can spot, and fires a
+# desktop notification when notify-send is available. Both are best-effort and
+# never affect delivery. Throttled to once per MAX_DEFER window so a
+# permanently-gone pane does not spam.
+inject_hard_ceiling_alarm() {  # <state> <age-seconds>
+  local state=$1 age=$2 throttle count newest
+  throttle="$state/.subsuper-afk-wedged"
+  # Throttle the (file + notification) blast to once per max-defer window.
+  if [ "$(_file_age "$throttle")" -lt "${FM_MAX_DEFER_SECS:-$MAX_DEFER_SECS_DEFAULT}" ]; then
+    return 0
+  fi
+  log "ERROR: away-mode escalation STILL undelivered ${age}s after hard-ceiling force-inject; supervisor pane gone or submit failing. Writing AFK-WEDGED.txt + desktop notification."
+  count=$(wc -l < "$state/.subsuper-escalations" 2>/dev/null || echo 0)
+  count=$(printf '%s' "$count" | tr -d '[:space:]')
+  newest=$(tail -n 1 "$state/.subsuper-escalations" 2>/dev/null || printf '(none)')
+  # Single-line, human-readable, top-level, easy to spot. Overwrite so it stays
+  # current (within the throttle window): duration, buffered count, newest line.
+  printf 'AFK WEDGED: %ss undelivered; %s buffered escalation(s); newest: %s\n' \
+    "$age" "$count" "$newest" > "$state/AFK-WEDGED.txt" 2>/dev/null || true
+  _now > "$throttle"
+  # Best-effort desktop notification. Never let a notification failure affect
+  # delivery or alarm emission. No network, no credentials.
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "firstmate away-mode WEDGED" \
+      "Escalation undelivered ${age}s (${count} buffered). See AFK-WEDGED.txt" \
+      -u critical 2>/dev/null || true
+  fi
+}
+
 _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first arrived (sidecar epoch)
   local f=$1 since
   [ -s "$f" ] || { echo 999999; return; }
@@ -596,15 +670,18 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 # Four cheap jobs, each guarded so an empty/quiet fleet costs near zero:
 #  1) batch flush: if the escalation buffer's oldest content is older than
 #     ESCALATE_BATCH_SECS (or batching is disabled), inject one digest.
-#  1b) max-defer escape: if the buffer is STILL undelivered past MAX_DEFER_SECS,
-#     attempt one normal delivery; if it cannot confirm, raise the wedge alarm.
-#     Never silently defer forever.
+#  1b) max-defer escape (tier 1): past MAX_DEFER_SECS, force-pending delivery
+#     bypasses the composer guard (still respects busy); if it cannot land, the
+#     wedge alarm fires. Never silently defer forever.
+#  1c) hard ceiling (tier 2): past FM_FORCE_INJECT_SECS, force-ALL delivery
+#     bypasses both guards; if even that cannot land, a loud alarm reaches
+#     outside the wedged pane (state/AFK-WEDGED.txt + notification).
 #  2) stale recheck: for each pending stale marker past STALE_ESCALATE_SECS,
 #     re-peek the pane; still idle -> escalate (wedge); resumed -> clear marker.
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest
+  local state=$1 now due f key task win marker age last max_defer oldest force_inject
   now=$(_now)
 
   # (1) batch flush
@@ -617,9 +694,15 @@ housekeeping() {  # <state>
     fi
   fi
 
-  # (1b) max-defer escape. If anything is still buffered past MAX_DEFER_SECS,
-  # retry the normal delivery path. If that still cannot confirm, raise a loud
-  # wedge alarm while preserving the buffer.
+  # (1b) max-defer escape (tier 1). If anything is still buffered past
+  # MAX_DEFER_SECS, force-pending delivery: bypass ONLY the composer guard
+  # (pane_input_pending) while still respecting the busy guard (pane_is_busy).
+  # The OLD code retried the exact inject_msg that was stuck on a detector
+  # false positive — a retry loop dressed as an escape, the root cause of the
+  # 9.4h afk-invx-i5 blackout. A composer that stays "pending" past this
+  # ceiling is overwhelmingly a false positive (a human does not hold a
+  # half-typed line this long), so the escape delivers. If it still cannot land
+  # (pane busy), the max-defer wedge alarm fires.
   max_defer=${FM_MAX_DEFER_SECS:-$MAX_DEFER_SECS_DEFAULT}
   if afk_active "$state" && [ "$max_defer" -gt 0 ] && [ -s "$state/.subsuper-escalations" ]; then
     oldest=$(_oldest_line_age "$state/.subsuper-escalations")
@@ -628,11 +711,29 @@ housekeeping() {  # <state>
     # and waits.
     if [ "$oldest" -ge "$max_defer" ] \
        && [ "$(_file_age "$state/.subsuper-inject-wedged")" -ge "$max_defer" ]; then
-      if escalate_flush "$state"; then
-        log "inject recovered: max-defer flush succeeded after ${oldest}s undelivered"
-        rm -f "$state/.subsuper-inject-wedged"
+      if escalate_flush "$state" force-pending; then
+        log "inject recovered: max-defer force-pending flush succeeded after ${oldest}s undelivered"
+        rm -f "$state/.subsuper-inject-wedged" "$state/.subsuper-afk-wedged" "$state/AFK-WEDGED.txt"
       else
         inject_wedge_alarm "$state" "$oldest"
+      fi
+    fi
+  fi
+
+  # (1c) hard ceiling (tier 2). Past FM_FORCE_INJECT_SECS, force-ALL delivery
+  # bypasses BOTH guards. A supervisor legitimately busy for 30 unbroken
+  # minutes while escalations queue is itself the emergency; deliver regardless.
+  # If even force delivery cannot land (pane gone / submit error), the loud
+  # alarm reaches outside the wedged pane (state/AFK-WEDGED.txt + notification).
+  force_inject=${FM_FORCE_INJECT_SECS:-$FORCE_INJECT_SECS_DEFAULT}
+  if afk_active "$state" && [ "$force_inject" -gt 0 ] && [ -s "$state/.subsuper-escalations" ]; then
+    oldest=$(_oldest_line_age "$state/.subsuper-escalations")
+    if [ "$oldest" -ge "$force_inject" ]; then
+      if escalate_flush "$state" force-all; then
+        log "inject recovered: hard-ceiling force-all flush succeeded after ${oldest}s undelivered"
+        rm -f "$state/.subsuper-inject-wedged" "$state/.subsuper-afk-wedged" "$state/AFK-WEDGED.txt"
+      else
+        inject_hard_ceiling_alarm "$state" "$oldest"
       fi
     fi
   fi
@@ -693,6 +794,31 @@ window_for_task() {  # <task-key> [state]
   return 1
 }
 
+# Track whether a "pending" composer verdict persists across unchanged pane
+# captures — the signature of a detector false positive (pane_input_pending
+# reporting pending on an idle pane). Counts consecutive unchanged-pending
+# observations; logs a distinct WARNING past the threshold so the next
+# investigator sees the answer immediately instead of a wall of identical
+# deferral lines. Purely observational: it never changes the deferral decision.
+_pending_false_positive_check() {  # <state> <backend> <target>
+  local state=$1 backend=$2 target=$3 cap h prev counted
+  cap=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null || true)
+  h=$(_hash_text "$cap")
+  prev=$(cat "$state/.subsuper-pending-hash" 2>/dev/null || printf '')
+  counted=$(cat "$state/.subsuper-pending-count" 2>/dev/null || printf '0')
+  case "$counted" in ''|*[!0-9]*) counted=0 ;; esac
+  if [ "$h" = "$prev" ] && [ -n "$prev" ]; then
+    counted=$((counted + 1))
+    printf '%s\n' "$counted" > "$state/.subsuper-pending-count"
+    if [ "$counted" -gt 20 ]; then
+      log "WARNING: probable pane_input_pending false positive: pending verdict persisted across $counted unchanged pane captures (backend=$backend target=$target). A human does not hold a half-typed line this long; the composer guard should eventually force-inject."
+    fi
+  else
+    printf '%s\n' "$h" > "$state/.subsuper-pending-hash"
+    printf '1\n' > "$state/.subsuper-pending-count"
+  fi
+}
+
 # --- injection --------------------------------------------------------------
 # inject_msg: send one escalation digest to the supervisor pane.
 # Returns 0 on successful inject (or empty buffer), non-zero if the pane is
@@ -713,9 +839,10 @@ window_for_task() {  # <task-key> [state]
 #     after dim/faint ghost text and borders are ignored (a human's half-typed
 #     line, or a previous injection's unsent text), defer entirely - injecting
 #     would merge with the human's text.
-inject_msg() {  # <message> [state]
-  local msg=$1 state target backend retries sleep_s verdict
+inject_msg() {  # <message> [state] [force]
+  local msg=$1 state target backend retries sleep_s verdict force
   state="${2:-$(_state_root)}"
+  force="${3:-}"
   # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
   # daemon self-handles and stays quiet; firstmate drives the normal always-on
   # watcher triage. Escalations buffer and survive for the next catch-up flush.
@@ -739,11 +866,19 @@ inject_msg() {  # <message> [state]
   #   b) pane_input_pending: the cursor line has real unsubmitted text after
   #      dim/faint ghost text and borders are ignored (a human's half-typed line,
   #      or a previous injection whose Enter was swallowed).
-  if pane_is_busy "$target" "$backend"; then
+  #   The busy guard is respected by force-pending (tier 1). force-all (tier 2,
+  #   the hard ceiling) bypasses BOTH guards. The composer guard is bypassed by
+  #   both force levels: a composer that has stayed "pending" past the defer
+  #   ceiling is overwhelmingly a detector false positive — a human does not
+  #   hold a half-typed line for 300+ seconds — so the escape MUST deliver.
+  #   Worst case the digest merges into a stale draft line; best case it ends a
+  #   multi-hour blackout. The asymmetry favours sending.
+  if [ "$force" != "force-all" ] && pane_is_busy "$target" "$backend"; then
     log "inject deferred: supervisor pane busy (agent mid-turn)"
     return 1
   fi
-  if pane_input_pending "$target" "$backend"; then
+  if [ "$force" != "force-pending" ] && [ "$force" != "force-all" ] && pane_input_pending "$target" "$backend"; then
+    _pending_false_positive_check "$state" "$backend" "$target"
     log "inject deferred: supervisor pane has pending input (non-empty composer)"
     return 1
   fi
@@ -854,6 +989,7 @@ fm_super_main() {
 
   # Source the portable lock helpers (works on macOS where flock is absent).
   # Export FM_STATE_OVERRIDE so the lib resolves the same state dir.
+  # shellcheck disable=SC1091
   # shellcheck source=bin/fm-wake-lib.sh
   FM_STATE_OVERRIDE="$STATE" . "$FM_DAEMON_DIR/fm-wake-lib.sh"
 

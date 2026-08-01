@@ -743,23 +743,53 @@ test_max_defer_flushes_empty_idle_pane() {
   pass "max-defer flushes and clears the buffer on an empty bordered pane"
 }
 
-test_max_defer_pending_composer_alarms_without_typing() {
+test_max_defer_force_pend_bypasses_stuck_pending() {
+  # THE regression (afk-invx-i5): pane_input_pending false-positives on an idle
+  # pane and never stops. The OLD max-defer escape retried the exact stuck
+  # inject_msg, so the blackout went on for 9.4h. Tier-1 force-pending now
+  # bypasses the composer guard and delivers anyway.
   local dir state fakebin sent
-  dir=$(make_bordered_case maxdefer-pending-digest)
+  dir=$(make_bordered_case force-pending-bypass)
   state="$dir/state"; fakebin="$dir/fakebin"
   sent="$dir/sent.log"; : > "$sent"
-  printf '│ > human draft │\n' > "$dir/composer"
-  escalate_add "$state" "needs-decision: pick B"
+  printf '│ > │\n' > "$dir/composer"
+  escalate_add "$state" "needs-decision: pick A"
+  echo $(( $(date +%s) - 600 )) > "$state/.subsuper-escalations.since"
+  afk_enter "$state"
+  (
+    # Stub pane_input_pending to ALWAYS report pending = the incident.
+    pane_input_pending() { return 0; }
+    PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+      FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=60 FM_INJECT_CONFIRM_SLEEP=0.05 \
+      housekeeping "$state"
+  ) || fail "max-defer force-pending housekeeping failed"
+  [ "$(grep -c 'Supervisor escalate' "$sent" 2>/dev/null || true)" -eq 1 ] \
+    || fail "max-defer did NOT deliver despite pane_input_pending always reporting pending"
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "buffer not cleared after force-pending bypass"
+  [ ! -e "$state/.subsuper-inject-wedged" ] \
+    || fail "wedge alarm fired on a deliverable force-pending flush"
+  pass "max-defer force-pending bypasses a stuck-pending composer and delivers"
+}
+
+test_max_defer_busy_composer_alarms_without_typing() {
+  # force-pending MUST still respect the busy guard (never inject mid-turn).
+  # A busy supervisor defers at tier 1 and the wedge alarm fires instead.
+  local dir state fakebin sent
+  dir=$(make_bordered_case maxdefer-busy)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  printf 'esc to interrupt\n' > "$dir/composer"
+  escalate_add "$state" "needs-decision: pick C"
   echo $(( $(date +%s) - 600 )) > "$state/.subsuper-escalations.since"
   afk_enter "$state"
   PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
     FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=60 FM_INJECT_CONFIRM_SLEEP=0.05 \
     housekeeping "$state"
-  [ ! -s "$sent" ] || fail "max-defer typed into a pending composer"
-  [ -s "$state/.subsuper-inject-wedged" ] || fail "pending composer did not raise a wedge alarm marker"
-  [ -s "$state/.subsuper-escalations" ] || fail "buffer lost while composer was pending"
-  grep -F 'human draft' "$dir/composer" >/dev/null || fail "pending composer content changed"
-  pass "max-defer on a pending composer alarms without typing"
+  [ ! -s "$sent" ] || fail "max-defer typed into a busy pane"
+  [ -s "$state/.subsuper-inject-wedged" ] || fail "busy composer did not raise a wedge alarm marker"
+  [ -s "$state/.subsuper-escalations" ] || fail "buffer lost while composer was busy"
+  pass "max-defer on a busy composer still defers (busy guard respected) and alarms"
 }
 
 test_normal_flush_clears_stale_wedge_marker() {
@@ -1063,7 +1093,8 @@ test_submit_ack_confirms_on_bordered_empty_composer
 test_submit_ack_reports_pending_on_persistent_swallow
 test_max_defer_empty_swallow_types_once_and_alarms
 test_max_defer_flushes_empty_idle_pane
-test_max_defer_pending_composer_alarms_without_typing
+test_max_defer_force_pend_bypasses_stuck_pending
+test_max_defer_busy_composer_alarms_without_typing
 test_normal_flush_clears_stale_wedge_marker
 test_below_max_defer_does_nothing
 test_max_defer_afk_inactive_does_not_flush_or_alarm

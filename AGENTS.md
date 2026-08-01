@@ -107,6 +107,7 @@ state/               volatile runtime signals; gitignored
   .watch-triage.log  watcher's absorbed-wake debug log (size-capped); never relied on, safe to delete
   .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); guard scripts read it
   .subsuper-* .supervise-daemon.*   sub-supervisor internals; never touch
+  AFK-WEDGED.txt     top-level loud alarm written when hard-ceiling force-inject still cannot land; cleared on a successful flush
 .no-mistakes/        local validation state and evidence; gitignored
 ```
 
