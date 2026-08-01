@@ -62,7 +62,7 @@ acquire_lock() {
   fi
 }
 
-# shellcheck disable=SC2329 # invoked via 'trap release_lock EXIT' below
+# shellcheck disable=SC2329,SC2317 # invoked via 'trap release_lock EXIT' below
 release_lock() {
   flock -u 200 2>/dev/null || true
   rm -f "$LOCK_FILE"
