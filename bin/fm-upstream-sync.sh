@@ -43,8 +43,8 @@ done
 DEFAULT="main"
 LOG_FILE="${FM_UPSTREAM_LOG:-/home/dep/.cache/fm-upstream-sync.log}"
 LOG_DIR="$(dirname "$LOG_FILE")"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOCK_FILE="/tmp/fm-upstream-sync.lock"
-LOCK_FD=200
 
 log_msg() {
   local ts
@@ -62,6 +62,7 @@ acquire_lock() {
   fi
 }
 
+# shellcheck disable=SC2329 # invoked via 'trap release_lock EXIT' below
 release_lock() {
   flock -u 200 2>/dev/null || true
   rm -f "$LOCK_FILE"

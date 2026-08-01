@@ -6,12 +6,15 @@
 # (wrong branch, dirty tree), and the push-to-origin step.
 set -u
 
-# shellcheck source=tests/lib.sh
+# shellcheck source=tests/lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fm_git_identity fmtest fmtest@example.invalid
 
 TMP_ROOT=$(fm_test_tmproot fm-upstream-sync-tests)
+# Redirect the script's log file into the temp root so tests stay hermetic and
+# never depend on (or touch) the host's ~/.cache log directory.
+export FM_UPSTREAM_LOG="$TMP_ROOT/upstream-sync.log"
 
 # Run the sync script inside the given repo, capturing stdout+stderr.
 # Usage: run_sync <repo> [args...]
@@ -48,6 +51,9 @@ new_test_repo() {
   origin_work="$TMP_ROOT/origin-src"
   clone_dir="$TMP_ROOT/worktree"
 
+  # Reset any leftovers from a previous test in this shared TMP_ROOT.
+  rm -rf "$upstream_work" "$origin_work" "$clone_dir" "$TMP_ROOT/upstream.git" "$TMP_ROOT/origin.git"
+
   # Create upstream (source repo): two commits on main.
   mkdir -p "$upstream_work"
   git init -q "$upstream_work"
@@ -60,11 +66,21 @@ new_test_repo() {
   git -C "$upstream_work" add README.md
   git -C "$upstream_work" -c user.name='fmtest' -c user.email='fmtest@example.invalid' commit -qm 'upstream v1'
 
-  git -C "$upstream_work" clone --quiet --bare "$upstream_work" "$TMP_ROOT/upstream.git"
+  # Commit the script under test into upstream-src so it is part of the tracked
+  # tree. The script's own dirty-tree guard rejects untracked files, so copying
+  # it in as an untracked file would make every run fail; committing it into the
+  # source means both origin and upstream (and so the clone) carry it tracked.
+  mkdir -p "$upstream_work/bin"
+  cp "$ROOT/bin/fm-upstream-sync.sh" "$upstream_work/bin/fm-upstream-sync.sh"
+  git -C "$upstream_work" add bin/fm-upstream-sync.sh
+  git -C "$upstream_work" -c user.name='fmtest' -c user.email='fmtest@example.invalid' commit -qm 'add fm-upstream-sync script'
 
-  # Create origin (fork): copy from upstream work (same two commits).
-  # The script is already committed in the main repo; we don't add extra commits here
-  # so that origin/main == upstream/main for the "already current" test.
+  git -C "$upstream_work" clone --quiet --bare "$upstream_work" "$TMP_ROOT/upstream.git"
+  # Register upstream.git as a remote of upstream-src so tests can push new
+  # commits to it to advance upstream/main.
+  git -C "$upstream_work" remote add upstream "$(cd "$TMP_ROOT/upstream.git" && pwd)"
+
+  # Create origin (fork): copy from upstream work (same commits, script included).
   git clone --quiet "$upstream_work" "$origin_work"
   git -C "$origin_work" clone --quiet --bare "$origin_work" "$TMP_ROOT/origin.git"
 
@@ -84,7 +100,7 @@ head_sha() { git -C "$1" rev-parse HEAD; }
 test_already_current_noop() {
   local repo
   repo=$(new_test_repo)
-  # Origin and upstream are already at the same commit (upstream v0).
+  # Origin and upstream share the same commits (including the script).
   run_sync_capture "$repo"
   local rc=$?
 
@@ -120,14 +136,19 @@ test_non_fast_forward_merge_succeeds() {
   repo=$(new_test_repo)
   before=$(head_sha "$repo")
 
-  # Origin main diverges: add a commit on origin.
-  git -C "$repo" checkout -q -b main
+  # Upstream advances on its own file (non-conflicting path).
+  git -C "$TMP_ROOT/upstream-src" checkout -q main
+  printf '# upstream v2\n' > "$TMP_ROOT/upstream-src/docs.md"
+  git -C "$TMP_ROOT/upstream-src" add docs.md
+  git -C "$TMP_ROOT/upstream-src" -c user.name='fmtest' -c user.email='fmtest@example.invalid' commit -qm 'upstream v2 docs'
+  git -C "$TMP_ROOT/upstream-src" push -q upstream main
+
+  # Origin diverges on a different file, so the merge is non-fast-forward but
+  # conflict-free.
   printf '# origin unique\n' > "$repo/unique.txt"
   git -C "$repo" add unique.txt
   git -C "$repo" -c user.name='fmtest' -c user.email='fmtest@example.invalid' commit -qm 'origin unique'
 
-  # Now upstream has commits ahead, and main diverges from upstream/main.
-  # The script should attempt a merge (non-fast-forward).
   run_sync_capture "$repo"
   local rc=$?
 
@@ -140,13 +161,14 @@ test_non_fast_forward_merge_succeeds() {
 test_merge_conflict_aborts_and_restores() {
   local repo before
   repo=$(new_test_repo)
-  before=$(head_sha "$repo")
 
   # Origin main edits README.md (same file as upstream).
-  git -C "$repo" checkout -q -b main
   printf '# origin edits README\n' > "$repo/README.md"
   git -C "$repo" add README.md
   git -C "$repo" -c user.name='fmtest' -c user.email='fmtest@example.invalid' commit -qm 'origin README edit'
+
+  # before = the state the sync starts from (origin's work preserved on abort).
+  before=$(head_sha "$repo")
 
   # Upstream also edits README.md (conflict path).
   git -C "$TMP_ROOT/upstream-src" checkout -q main
@@ -159,9 +181,10 @@ test_merge_conflict_aborts_and_restores() {
   local rc=$?
 
   expect_code 1 "$rc" "conflict exits 1"
-  assert_contains "$_SYNC_OUT" "CONFLICT" "conflict output contains CONFLICT"
+  assert_contains "$_SYNC_OUT" "conflict" "conflict output mentions conflict"
   assert_contains "$_SYNC_OUT" "restored" "conflict output mentions restore"
   [ "$(head_sha "$repo")" = "$before" ] || fail "expected main restored to pre-merge SHA"
+  [ -z "$(git -C "$repo" status --porcelain)" ] || fail "working tree must be clean after conflict abort"
   pass "merge conflict aborts and restores main"
 }
 
@@ -193,7 +216,6 @@ test_dry_run_conflict() {
   repo=$(new_test_repo)
 
   # Origin diverges from upstream on same file.
-  git -C "$repo" checkout -q -b main
   printf '# origin README change\n' > "$repo/README.md"
   git -C "$repo" add README.md
   git -C "$repo" -c user.name='fmtest' -c user.email='fmtest@example.invalid' commit -qm 'origin README'
