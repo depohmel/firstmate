@@ -132,7 +132,7 @@ check_pr_readiness() {  # <id> <meta>
   case "$number" in ''|*[!0-9]*) bosun_log "pr-readiness:$id:skip:bad-pr-number"; return 0 ;; esac
 
   # Head commit SHA via gh pr view
-  head_sha=$(gh pr view "$pr" --json headRefOID -q .headRefOID 2>/dev/null) || head_sha=""
+  head_sha=$(gh pr view "$pr" --json headRefOid -q .headRefOid 2>/dev/null) || head_sha=""
   [ -n "$head_sha" ] || { bosun_log "pr-readiness:$id:skip:no-head-sha"; return 0; }
 
   # Head commit timestamp
@@ -145,7 +145,7 @@ check_pr_readiness() {  # <id> <meta>
     "repos/$owner_repo/pulls/$number/reviews" \
     "repos/$owner_repo/pulls/$number/comments"
   do
-    ts=$(gh api "$endpoint" --jq '[.[] | (.submittedAt // .created_at // empty)] | max // ""' 2>/dev/null) || ts=""
+    ts=$(gh api "$endpoint" --jq '[.[] | (.submitted_at // .created_at // empty)] | max // ""' 2>/dev/null) || ts=""
     if [ -n "$ts" ] && { [ -z "$review_ts" ] || [[ "$ts" > "$review_ts" ]]; }; then
       review_ts=$ts
     fi
@@ -211,9 +211,16 @@ check_unpushed_commits() {  # <id> <meta>
   [ -n "$wt" ] || return 0
   [ -d "$wt" ] || return 0
 
-  # Commits ahead of upstream
-  ahead=$(git -C "$wt" rev-list --count "HEAD@{upstream}"..HEAD 2>/dev/null) || ahead=0
-  case "$ahead" in ''|*[!0-9]*) ahead=0 ;; esac
+  # Commits ahead of upstream. HEAD@{upstream} silently returns zero when a
+  # branch has no upstream (the common case here, since the pipeline pushes
+  # without setting tracking). Instead, ask whether HEAD exists on ANY remote
+  # ref: if it does not, there are unpushed commits. This check can actually
+  # fail, unlike HEAD@{upstream} which swallows the no-upstream error.
+  if git -C "$wt" branch -r --contains HEAD 2>/dev/null | grep -q .; then
+    ahead=0
+  else
+    ahead=1
+  fi
 
   if [ "$ahead" -eq 0 ]; then
     rm -f "$BOSUN_STATE_DIR/$id.push-since" 2>/dev/null || true
@@ -329,9 +336,9 @@ check_stale_teardown() {  # <id> <meta>
 
   command -v gh >/dev/null 2>&1 || return 0
 
-  merged=$(gh pr view "$pr" --json merged -q .merged 2>/dev/null) || merged=""
+  merged=$(gh pr view "$pr" --json state -q .state 2>/dev/null) || merged=""
   case "$merged" in
-    true) ;;
+    MERGED) ;;
     *) return 0 ;;
   esac
 
