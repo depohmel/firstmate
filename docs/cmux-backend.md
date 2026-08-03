@@ -87,8 +87,9 @@ A genuinely fresh surface returns an internal error from `read-screen` until som
 Target readiness therefore uses the structural `list-panes` response instead of a content read.
 Capture remains bounded and locally trimmed after `read-screen` becomes available.
 
-`current_directory` follows a top-level shell `cd` but not the foreground subshell opened by `treehouse get`.
-Spawn-time worktree discovery sends begin and end markers around `pwd`, captures the marked block, and joins wrapped path lines.
+`current_directory` follows a top-level shell `cd` but not a foreground subshell's own `cd`.
+The adapter's cwd read therefore sends begin and end markers around `pwd`, captures the marked block, and joins wrapped path lines.
+It was written for spawn-time worktree discovery; `fm-spawn.sh` now leases the worktree directly with `treehouse get --lease`, so the read has no live caller and is retained as the backend's cwd-read primitive.
 
 Literal send and Enter are separate calls.
 Enter, Escape, and Ctrl-C are supported.
