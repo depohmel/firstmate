@@ -207,7 +207,17 @@ set -u
   done
   printf '\n'
 } >> "$TREEHOUSE_CALL_LOG"
+# Arm the post-create abort. fm-spawn.sh acquires the task worktree itself with
+# `treehouse get --lease`, after the projection already exists, so hand back a
+# path that is not an isolated worktree instead of staying silent: an empty lease
+# would abort at fm-spawn's own acquisition guard, one step BEFORE the failure
+# this block exercises. validate_spawn_worktree now fails with its usual
+# "did not yield an isolated worktree" message at exactly the post-create point,
+# and the durable lease is still released by fm-spawn's abort cleanup.
+# (The pane-get foreground_cwd rewrite above armed this same failure back when
+# fm-spawn discovered the worktree by polling the pane's cwd.)
 if [ -d "$POST_CREATE_ABORT_CONTROL" ] && [ "${1:-}" = get ]; then
+  printf '%s\n' "$POST_CREATE_ABORT_CONTROL/not-a-worktree"
   exit 0
 fi
 exec "$REAL_TREEHOUSE" "$@"
