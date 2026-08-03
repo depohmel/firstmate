@@ -22,6 +22,8 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
 : "${FM_BOSUN_DRY_RUN:=0}"
+: "${FM_BOSUN_COMMIT_AGE_SECS:=900}"
+: "${FM_BOSUN_PUSH_AGE_SECS:=900}"
 : "${FM_BOSUN_STEER_INTERVAL:=600}"
 : "${FM_BOSUN_LOG_MAX_BYTES:=1048576}"
 
@@ -162,8 +164,67 @@ check_pr_readiness() {  # <id> <meta>
     bosun_send_steer "$id" "pr-reread" "$STEER_REREAD_PR"
   fi
 }
-check_uncommitted_work() { return 0; }  # <id> <meta>
-check_unpushed_commits() { return 0; }  # <id> <meta>
+check_uncommitted_work() {  # <id> <meta>
+  local id=$1 meta=$2 wt changes age
+
+  wt=$(fm_meta_get "$meta" worktree) || true
+  [ -n "$wt" ] || return 0
+  [ -d "$wt" ] || return 0
+
+  changes=$(git -C "$wt" status --porcelain 2>/dev/null)
+  if [ -z "$changes" ]; then
+    # No uncommitted changes; clear the since-marker so a future change
+    # starts the timer fresh.
+    rm -f "$BOSUN_STATE_DIR/$id.commit-since" 2>/dev/null || true
+    return 0
+  fi
+
+  # First detection: record and wait for the age threshold
+  if [ ! -e "$BOSUN_STATE_DIR/$id.commit-since" ]; then
+    bosun_state_set "$id" commit-since "1"
+    bosun_log "uncommitted:$id:first-commit-since"
+    return 0
+  fi
+
+  age=$(bosun_state_age "$id" commit-since)
+  if [ "$age" -ge "$FM_BOSUN_COMMIT_AGE_SECS" ]; then
+    bosun_send_steer "$id" "commit" "$STEER_COMMIT"
+    bosun_log "uncommitted:$id:age=${age}s threshold=$FM_BOSUN_COMMIT_AGE_SECS steer-dispatched"
+  else
+    bosun_log "uncommitted:$id:age=${age}s threshold=$FM_BOSUN_COMMIT_AGE_SECS waiting"
+  fi
+}
+check_unpushed_commits() {  # <id> <meta>
+  local id=$1 meta=$2 wt ahead age
+
+  wt=$(fm_meta_get "$meta" worktree) || true
+  [ -n "$wt" ] || return 0
+  [ -d "$wt" ] || return 0
+
+  # Commits ahead of upstream
+  ahead=$(git -C "$wt" rev-list --count "HEAD@{upstream}"..HEAD 2>/dev/null) || ahead=0
+  case "$ahead" in ''|*[!0-9]*) ahead=0 ;; esac
+
+  if [ "$ahead" -eq 0 ]; then
+    rm -f "$BOSUN_STATE_DIR/$id.push-since" 2>/dev/null || true
+    return 0
+  fi
+
+  # First detection: record and wait for the age threshold
+  if [ ! -e "$BOSUN_STATE_DIR/$id.push-since" ]; then
+    bosun_state_set "$id" push-since "1"
+    bosun_log "unpushed:$id:first ahead=$ahead"
+    return 0
+  fi
+
+  age=$(bosun_state_age "$id" push-since)
+  if [ "$age" -ge "$FM_BOSUN_PUSH_AGE_SECS" ]; then
+    bosun_send_steer "$id" "push" "$STEER_PUSH"
+    bosun_log "unpushed:$id:age=${age}s threshold=$FM_BOSUN_PUSH_AGE_SECS ahead=$ahead steer-dispatched"
+  else
+    bosun_log "unpushed:$id:age=${age}s threshold=$FM_BOSUN_PUSH_AGE_SECS ahead=$ahead waiting"
+  fi
+}
 check_parked_work()     { return 0; }  # <id>
 check_deploy_drift()    { return 0; }
 check_stale_teardown()  { return 0; }  # <id> <meta>
