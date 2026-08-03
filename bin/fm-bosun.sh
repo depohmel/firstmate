@@ -13,6 +13,11 @@
 # Environment:
 #   FM_HOME                    firstmate home (defaults to repo root)
 #   FM_BOSUN_DRY_RUN           1 to log without sending (default 0)
+#   FM_BOSUN_COMMIT_AGE_SECS   uncommitted-work age threshold (default 900)
+#   FM_BOSUN_PUSH_AGE_SECS     unpushed-commits age threshold (default 900)
+#   FM_BOSUN_PARKED_AGE_SECS   parked-work initial threshold (default 3600)
+#   FM_BOSUN_PARKED_BACKOFF_BASE  initial re-escalation backoff (default 600)
+#   FM_BOSUN_PARKED_BACKOFF_MAX  max re-escalation backoff (default 86400)
 #   FM_BOSUN_STEER_INTERVAL    rate cap for steers in seconds (default 600)
 #   FM_BOSUN_LOG_MAX_BYTES     log rotation threshold (default 1048576)
 set -u
@@ -24,6 +29,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 : "${FM_BOSUN_DRY_RUN:=0}"
 : "${FM_BOSUN_COMMIT_AGE_SECS:=900}"
 : "${FM_BOSUN_PUSH_AGE_SECS:=900}"
+: "${FM_BOSUN_PARKED_AGE_SECS:=3600}"
+: "${FM_BOSUN_PARKED_BACKOFF_BASE:=600}"
+: "${FM_BOSUN_PARKED_BACKOFF_MAX:=86400}"
 : "${FM_BOSUN_STEER_INTERVAL:=600}"
 : "${FM_BOSUN_LOG_MAX_BYTES:=1048576}"
 
@@ -31,6 +39,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-classify-lib.sh
+. "$SCRIPT_DIR/fm-classify-lib.sh"
 
 BOSUN_LOCK="$STATE/.bosun.lock"
 BOSUN_LOG="$STATE/.bosun.log"
@@ -225,19 +235,66 @@ check_unpushed_commits() {  # <id> <meta>
     bosun_log "unpushed:$id:age=${age}s threshold=$FM_BOSUN_PUSH_AGE_SECS ahead=$ahead waiting"
   fi
 }
-check_parked_work()     { return 0; }  # <id>
+check_parked_work() {  # <id>
+  local id=$1 last_line verb since_age backoff esc_count
+
+  last_line=$(last_status_line "$STATE/$id.status") || last_line=""
+  [ -n "$last_line" ] || { _clear_parked_state "$id"; return 0; }
+
+  verb=$(status_line_verb "$last_line")
+  case "$verb" in
+    blocked|needs-decision) ;;
+    *) _clear_parked_state "$id"; return 0 ;;
+  esac
+
+  # First detection: record and wait for the initial threshold
+  if [ ! -e "$BOSUN_STATE_DIR/$id.parked-since" ]; then
+    bosun_state_set "$id" parked-since "1"
+    bosun_log "parked:$id:first verb=$verb"
+    return 0
+  fi
+
+  since_age=$(bosun_state_age "$id" parked-since)
+  if [ "$since_age" -lt "$FM_BOSUN_PARKED_AGE_SECS" ]; then
+    return 0
+  fi
+
+  # Past initial threshold; compute exponential backoff for re-escalation
+  esc_count=$(cat "$BOSUN_STATE_DIR/$id.esc-count" 2>/dev/null || echo 0)
+  case "$esc_count" in ''|*[!0-9]*) esc_count=0 ;; esac
+
+  backoff=$FM_BOSUN_PARKED_BACKOFF_BASE
+  i=0
+  while [ "$i" -lt "$esc_count" ] && [ "$backoff" -lt "$FM_BOSUN_PARKED_BACKOFF_MAX" ]; do
+    backoff=$((backoff * 2))
+    i=$((i + 1))
+  done
+  [ "$backoff" -gt "$FM_BOSUN_PARKED_BACKOFF_MAX" ] && backoff=$FM_BOSUN_PARKED_BACKOFF_MAX
+
+  # Check backoff since last escalation
+  if [ "$(bosun_state_age "$id" esc-last)" -ge "$backoff" ]; then
+    if [ "$FM_BOSUN_DRY_RUN" = 1 ]; then
+      bosun_log "parked:$id:WOULD-escalate verb=$verb age=${since_age}s esc=$((esc_count + 1)) backoff=${backoff}s"
+    else
+      fm_wake_append "stale" "$id.status" \
+        "BOSUN-ESCALATION: parked on ${verb} for ${since_age}s: ${last_line}" 2>/dev/null || true
+      bosun_log "parked:$id:escalated verb=$verb age=${since_age}s esc=$((esc_count + 1)) backoff=${backoff}s"
+    fi
+    bosun_state_set "$id" esc-last "1"
+    bosun_state_set "$id" esc-count "$((esc_count + 1))"
+  fi
+}
+
+_clear_parked_state() {  # <id>
+  rm -f "$BOSUN_STATE_DIR/$1.parked-since" "$BOSUN_STATE_DIR/$1.esc-last" \
+    "$BOSUN_STATE_DIR/$1.esc-count" 2>/dev/null || true
+}
 check_deploy_drift()    { return 0; }
 check_stale_teardown()  { return 0; }  # <id> <meta>
 
 # --- Main ---
 main() {
   bosun_log "cycle:start dry-run=$FM_BOSUN_DRY_RUN"
-
-  if [ "$FM_BOSUN_DRY_RUN" != 1 ]; then
-    if ! command -v gh >/dev/null 2>&1; then
-      bosun_log "warn:gh CLI not found; PR-related checks will skip"
-    fi
-  fi
 
   local meta id
   for meta in "$STATE"/*.meta; do
