@@ -27,6 +27,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-backend.sh
+. "$SCRIPT_DIR/fm-backend.sh"
 
 BOSUN_LOCK="$STATE/.bosun.lock"
 BOSUN_LOG="$STATE/.bosun.log"
@@ -98,7 +100,68 @@ bosun_steer_record() {  # <id> <action-key>
 }
 
 # --- Checks (implemented in subsequent commits) ---
-check_pr_readiness()    { return 0; }  # <id> <meta>
+check_pr_readiness() {  # <id> <meta>
+  local id=$1 meta=$2 pr owner_repo number
+  local head_sha head_ts review_ts ts changes_requested verdict
+
+  pr=$(fm_meta_get "$meta" pr) || true
+  [ -n "$pr" ] || return 0
+
+  case "$pr" in
+    https://github.com/*) : ;;
+    *) bosun_log "pr-readiness:$id:skip:non-github-url"; return 0 ;;
+  esac
+
+  command -v gh >/dev/null 2>&1 || { bosun_log "pr-readiness:$id:skip:gh-missing"; return 0; }
+
+  # Parse https://github.com/<owner>/<repo>/pull/<number>
+  owner_repo=$(printf '%s' "$pr" | sed 's|https://github.com/||; s|/pull/[^/]*$||')
+  number=$(printf '%s' "$pr" | sed 's|.*/pull/||')
+  case "$number" in ''|*[!0-9]*) bosun_log "pr-readiness:$id:skip:bad-pr-number"; return 0 ;; esac
+
+  # Head commit SHA via gh pr view
+  head_sha=$(gh pr view "$pr" --json headRefOID -q .headRefOID 2>/dev/null) || head_sha=""
+  [ -n "$head_sha" ] || { bosun_log "pr-readiness:$id:skip:no-head-sha"; return 0; }
+
+  # Head commit timestamp
+  head_ts=$(gh api "repos/$owner_repo/commits/$head_sha" --jq '.commit.committer.date' 2>/dev/null) || head_ts=""
+  [ -n "$head_ts" ] || { bosun_log "pr-readiness:$id:skip:no-head-ts"; return 0; }
+
+  # Latest reviewer activity: max of review submissions and review comments
+  review_ts=""
+  for endpoint in \
+    "repos/$owner_repo/pulls/$number/reviews" \
+    "repos/$owner_repo/pulls/$number/comments"
+  do
+    ts=$(gh api "$endpoint" --jq '[.[] | (.submittedAt // .created_at // empty)] | max // ""' 2>/dev/null) || ts=""
+    if [ -n "$ts" ] && { [ -z "$review_ts" ] || [[ "$ts" > "$review_ts" ]]; }; then
+      review_ts=$ts
+    fi
+  done
+
+  # Outstanding findings: changes-requested reviews
+  changes_requested=$(gh api "repos/$owner_repo/pulls/$number/reviews" --jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' 2>/dev/null) || changes_requested=0
+  case "$changes_requested" in ''|*[!0-9]*) changes_requested=0 ;; esac
+
+  # Verdict: lexical compare of ISO-8601 UTC timestamps
+  if [ -z "$review_ts" ]; then
+    verdict="NO-reviews-yet"
+  elif [[ "$review_ts" > "$head_ts" ]]; then
+    verdict="reviewed-against-current-head"
+  elif [[ "$review_ts" < "$head_ts" ]]; then
+    verdict="NOT-reviewed-against-current-head"
+  else
+    verdict="reviewed-at-same-time"
+  fi
+
+  # Persistent status trail: report the pair explicitly, never a bare "green"
+  bosun_log "pr-readiness:$id:verdict=$verdict review_ts=${review_ts:-none} head_ts=$head_ts changes_requested=$changes_requested"
+
+  # Steer only when review predates head (rate-capped)
+  if [ "$verdict" = "NOT-reviewed-against-current-head" ]; then
+    bosun_send_steer "$id" "pr-reread" "$STEER_REREAD_PR"
+  fi
+}
 check_uncommitted_work() { return 0; }  # <id> <meta>
 check_unpushed_commits() { return 0; }  # <id> <meta>
 check_parked_work()     { return 0; }  # <id>
