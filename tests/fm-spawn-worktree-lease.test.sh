@@ -75,7 +75,7 @@ run_lease_spawn() {  # <home> <id> <proj> <fakebin>
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     PATH="$fakebin:$PATH" \
-    "$SPAWN" "$id" "$proj" 2>&1
+    "$SPAWN" "$id" "$proj" --mode no-mistakes --yolo off 2>&1
 }
 
 # The recorded worktree must be the path treehouse leased, and in particular
