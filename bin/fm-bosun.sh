@@ -289,8 +289,62 @@ _clear_parked_state() {  # <id>
   rm -f "$BOSUN_STATE_DIR/$1.parked-since" "$BOSUN_STATE_DIR/$1.esc-last" \
     "$BOSUN_STATE_DIR/$1.esc-count" 2>/dev/null || true
 }
-check_deploy_drift()    { return 0; }
-check_stale_teardown()  { return 0; }  # <id> <meta>
+check_deploy_drift() {
+  if [ ! -x "$SCRIPT_DIR/fm-deploy-drift.sh" ]; then
+    # Not present yet; skip silently in normal mode, log in dry-run
+    if [ "$FM_BOSUN_DRY_RUN" = 1 ]; then
+      bosun_log "deploy-drift:skipped:fm-deploy-drift.sh-not-present"
+    fi
+    return 0
+  fi
+
+  local output
+  output=$("$SCRIPT_DIR/fm-deploy-drift.sh" 2>&1)
+  if [ -n "$output" ]; then
+    if [ "$FM_BOSUN_DRY_RUN" = 1 ]; then
+      bosun_log "deploy-drift:WOULD-escalate:$output"
+    else
+      fm_wake_append "stale" "deploy-drift" \
+        "BOSUN-ESCALATION: deploy drift: $output" 2>/dev/null || true
+      bosun_log "deploy-drift:escalated:$output"
+    fi
+  else
+    bosun_log "deploy-drift:ok:no-drift"
+  fi
+}
+check_stale_teardown() {  # <id> <meta>
+  local id=$1 meta=$2 wt pr merged
+
+  wt=$(fm_meta_get "$meta" worktree) || true
+  [ -n "$wt" ] || return 0
+  [ -d "$wt" ] || return 0
+
+  pr=$(fm_meta_get "$meta" pr) || true
+  [ -n "$pr" ] || return 0
+
+  case "$pr" in
+    https://github.com/*) : ;;
+    *) return 0 ;;
+  esac
+
+  command -v gh >/dev/null 2>&1 || return 0
+
+  merged=$(gh pr view "$pr" --json merged -q .merged 2>/dev/null) || merged=""
+  case "$merged" in
+    true) ;;
+    *) return 0 ;;
+  esac
+
+  # PR is merged but the worktree still exists - record for firstmate,
+  # do NOT tear it down ourselves.
+  if [ "$FM_BOSUN_DRY_RUN" = 1 ]; then
+    bosun_log "stale-teardown:$id:PR-merged worktree-exists wt=$wt"
+  else
+    fm_wake_append "stale" "$id.status" \
+      "BOSUN-ESCALATION: PR merged but worktree still exists, needs cleanup: $wt" 2>/dev/null || true
+    bosun_log "stale-teardown:$id:escalated wt=$wt"
+  fi
+}
 
 # --- Main ---
 main() {
