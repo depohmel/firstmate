@@ -1412,7 +1412,9 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # and is skipped by later get/prune, so the worktree survives until teardown's
   # `treehouse return --force` releases it (or spawn_abort_cleanup does, if this
   # spawn aborts before state/<id>.meta exists to hand it over).
-  if ! WT=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "fm-$ID" 2>/dev/null) \
+  # stderr is deliberately not swallowed: treehouse's own banner is where a pool
+  # problem (exhausted, unclean, not a pool at all) explains itself.
+  if ! WT=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "fm-$ID") \
      || [ -z "$WT" ]; then
     echo "error: treehouse get --lease failed for $PROJ_ABS; inspect the pool with 'treehouse status'" >&2
     exit 1
