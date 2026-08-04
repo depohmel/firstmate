@@ -502,6 +502,90 @@ _escalate_stalled() {  # <id> <reason>
   bosun_state_set "$id" stalled "1"
 }
 
+# --- Check: no-progress crew ---------------------------------------------
+
+# A crew whose worktree has had no file modification (excluding .git) and no
+# new commit for longer than FM_BOSUN_NPROGRESS_SECS (default 1800), while
+# the crew is still busy (running step or non-terminal status), is escalated
+# the same way parked work is. This catches crews that look alive but are
+# producing nothing - conflict-marker loops, long generation stalls, etc.
+
+# Newest file mtime under <wt> excluding .git and its contents.
+worktree_newest_mtime() {  # <wt>
+  local wt=$1 mtime
+  mtime=$(find "$wt" -mindepth 1 \
+    -not -name ".git" -not -path "*/.git/*" \
+    -type f -printf '%T@\n' 2>/dev/null | sort -rn | head -1 | cut -d. -f1)
+  case "$mtime" in ''|*[!0-9]*) mtime=0 ;; esac
+  printf '%s' "$mtime"
+}
+
+# HEAD commit time as epoch seconds (0 if no commits).
+worktree_head_commit_time() {  # <wt>
+  local wt=$1 ct
+  ct=$(git -C "$wt" log -1 --format=%ct 2>/dev/null) || ct=""
+  case "$ct" in ''|*[!0-9]*) ct=0 ;; esac
+  printf '%s' "$ct"
+}
+
+# True (0) if the crew is currently busy: either NM_AXI_STATUS=running
+# (from cached axi status) or the status log's last line is non-terminal
+# and not a declared pause.
+bosun_crew_is_busy() {  # <id>
+  local id=$1 last_line verb
+  [ "$NM_AXI_STATUS" = running ] && return 0
+  last_line=$(last_status_line "$STATE/$id.status") || last_line=""
+  [ -n "$last_line" ] || return 1
+  verb=$(status_line_verb "$last_line")
+  case "$verb" in
+    done|needs-decision|blocked|failed) return 1 ;;
+    paused) return 1 ;;
+  esac
+  return 0
+}
+
+check_no_progress_crew() {  # <id> <meta>
+  local id=$1 meta=$2 wt mtime commit_time newest_age now
+  wt=$(fm_meta_get "$meta" worktree) || true
+  [ -n "$wt" ] || return 0
+  [ -d "$wt" ] || return 0
+
+  bosun_get_axi_status "$id" "$meta"
+  if ! bosun_crew_is_busy "$id"; then
+    return 0
+  fi
+
+  mtime=$(worktree_newest_mtime "$wt")
+  commit_time=$(worktree_head_commit_time "$wt")
+  now=$(date +%s)
+
+  if [ "$mtime" -ge "$commit_time" ]; then
+    newest_age=$((now - mtime))
+  else
+    newest_age=$((now - commit_time))
+  fi
+
+  if [ "$newest_age" -ge "$FM_BOSUN_NPROGRESS_SECS" ]; then
+    _escalate_no_progress "$id" "no-change-for=${newest_age}s threshold=$FM_BOSUN_NPROGRESS_SECS"
+  fi
+}
+
+_escalate_no_progress() {  # <id> <reason>
+  local id=$1 reason=$2
+  if [ "$(bosun_state_age "$id" no-progress)" -lt "$FM_BOSUN_STEER_INTERVAL" ]; then
+    bosun_log "no-progress:$id:rate-capped reason=$reason"
+    return 0
+  fi
+  if [ "$FM_BOSUN_DRY_RUN" = 1 ]; then
+    bosun_log "no-progress:$id:WOULD-escalate reason=$reason"
+  else
+    fm_wake_append "stale" "$id.status" \
+      "BOSUN-ESCALATION: no-progress crew: $reason" 2>/dev/null || true
+    bosun_log "no-progress:$id:escalated reason=$reason"
+  fi
+  bosun_state_set "$id" no-progress "1"
+}
+
 # --- Main ---
 main() {
   bosun_log "cycle:start dry-run=$FM_BOSUN_DRY_RUN"
@@ -516,6 +600,7 @@ main() {
     check_parked_work "$id"
     check_stale_teardown "$id" "$meta"
     check_stalled_runstep "$id" "$meta"
+    check_no_progress_crew "$id" "$meta"
   done
 
   check_deploy_drift
