@@ -18,13 +18,28 @@ fm_git_identity fmtest fmtest@example.invalid
 
 SWEEP="$ROOT/bin/fm-rebase-sweep.sh"
 TMP_ROOT=$(fm_test_tmproot fm-rebase-sweep-tests)
-HOME_N=0
 
 # --- fixtures ---------------------------------------------------------------
 
+# Each test gets its own isolated home directory. A file-based counter is
+# used because new_home is called in a command substitution subshell, so a
+# shell variable would not survive across calls. This isolation matters
+# because git init does not clear existing remotes, so a shared projects/
+# dir would let one test's origin bleed into another.
 new_home() {
-  HOME_N=$((HOME_N + 1))
-  local h="$TMP_ROOT/home-$HOME_N"
+  # fm_test_tmproot runs in a $(...) subshell whose EXIT trap may have already
+  # removed $TMP_ROOT; recreate it so subsequent writes succeed.
+  mkdir -p "$TMP_ROOT"
+  local counter_file="$TMP_ROOT/.counter" n
+  if [ -f "$counter_file" ]; then
+    n=$(cat "$counter_file")
+  else
+    n=0
+  fi
+  n=$((n + 1))
+  echo "$n" > "$counter_file"
+  local h="$TMP_ROOT/home-$n"
+  rm -rf "$h"
   mkdir -p "$h/projects"
   printf '%s\n' "$h"
 }
@@ -91,18 +106,12 @@ SH
 
 # run_sweep <home> <fakebin> <project-arg> [var=value pairs...]:
 # Run the sweep with the fakebin on PATH. Extra args are var=value pairs
-# exported into the subprocess environment so they reach the sweep subprocess
-# and its gh-axi mock.
+# passed to env(1) so they reach the sweep subprocess and its gh-axi mock.
 run_sweep() {
   local home=$1 fakebin=$2 proj=$3
   shift 3
-  local arg
-  for arg in "$@"; do
-    # shellcheck disable=SC2163
-    export "$arg"
-  done
-  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    "$SWEEP" "$proj" 2>/dev/null
+  env PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$@" "$SWEEP" "$proj" 2>/dev/null
 }
 
 # helper to build a tab-separated PR list row
@@ -324,7 +333,8 @@ test_help_flag() {
   fakebin=$(build_fakebin "$home")
 
   set +e
-  run_sweep "$home" "$fakebin" "--help" >/dev/null 2>&1
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$SWEEP" "--help" >/dev/null 2>&1
   rc=$?
   set -e
 
@@ -337,8 +347,11 @@ test_too_many_args_refuses() {
   home=$(new_home)
   fakebin=$(build_fakebin "$home")
 
+  # Invoke the sweep directly with two positional args (not var=value pairs),
+  # since run_sweep reserves extra args for TEST_REBASE_* env injection.
   set +e
-  run_sweep "$home" "$fakebin" "one" "two" >/dev/null 2>&1
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$SWEEP" "one" "two" >/dev/null 2>&1
   rc=$?
   set -e
 
