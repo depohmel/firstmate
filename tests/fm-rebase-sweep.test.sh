@@ -2,13 +2,15 @@
 # Behavior tests for bin/fm-rebase-sweep.sh.
 #
 # The sweep lists open PRs for a project, reads each PR's mergeable state via
-# gh-axi, and reports one line per PR that needs a rebase (conflicting or
-# behind the base). It is silent when all PRs are clean, and a gh-axi failure
+# gh-axiom, and reports one line per PR that needs a rebase (conflicting or
+# behind the base). It is silent when all PRs are clean, and a gh-axiom failure
 # degrades to a single skip line rather than an error.
 #
-# Tests mock gh-axi with a fakebin that responds to:
-#   pr list  --json ... --jq ...   (reads TEST_REBASE_PR_LIST)
-#   api      <url> -q .behind_by    (reads TEST_REBASE_BEHIND_<head>)
+# Tests mock gh-axiom with a fakebin that responds to the real gh-axiom
+# interface:
+#   pr list --state open -R owner/repo --limit N   (returns gh-axiom text format)
+#   api  /repos/owner/repo/pulls/<num>             (returns text PR details)
+#   api  /repos/owner/repo/compare/<base>...<head>  (returns behind_by)
 # TEST_REBASE_GH_FAIL=1 makes pr list fail to exercise the graceful-failure path.
 set -u
 
@@ -67,7 +69,8 @@ build_clone() {
   printf '%s\n' "$clone"
 }
 
-# build_fakebin <home>: create a fakebin/gh-axi mock. Reads env:
+# build_fakebin <home>: create a fakebin/gh-axi mock that emulates the real
+# gh-axiom text-based interface. Reads env:
 #   TEST_REBASE_PR_LIST       (tab-separated rows: number state base head)
 #   TEST_REBASE_BEHIND_<head> (behind count for that head SHA)
 #   TEST_REBASE_GH_FAIL=1     (make pr list fail)
@@ -84,17 +87,55 @@ if [ "$cmd" = "pr" ] && [ "$subcmd" = "list" ]; then
     echo "error: gh-axi not configured" >&2
     exit 1
   fi
-  printf '%s\n' "${TEST_REBASE_PR_LIST:-}"
+
+  count=0
+  while IFS=$'\t' read -r _n _s _b _h; do
+    [ -n "$_n" ] || continue
+    count=$((count + 1))
+  done <<< "${TEST_REBASE_PR_LIST:-}"
+
+  printf 'count: %d\n' "$count"
+  printf 'pull_requests[%d]{number,title,state,author,draft,review}:\n' "$count"
+  while IFS=$'\t' read -r number _s _b _h; do
+    [ -n "$number" ] || continue
+    printf '  %s,"Test PR #%s",open,depohmel,no,none\n' "$number" "$number"
+  done <<< "${TEST_REBASE_PR_LIST:-}"
+  printf 'help[0]:\n'
   exit 0
 fi
 
 if [ "$cmd" = "api" ]; then
-  # gh-axi api <url> -q <filter>
-  url="${2:-}"
-  compare_part="${url##*/compare/}"
-  head="${compare_part#*...}"
-  var="TEST_REBASE_BEHIND_${head}"
-  printf '%s\n' "${!var:-0}"
+  case "$2" in
+    GET|POST|PUT|PATCH|DELETE|HEAD) url="${3:-}" ;;
+    *) url="${2:-}" ;;
+  esac
+  case "$url" in
+    */pulls/[0-9]*)
+      number="${url##*/pulls/}"
+      while IFS=$'\t' read -r pnum pstate pbase phead; do
+        [ -n "$pnum" ] || continue
+        if [ "$pnum" = "$number" ]; then
+          printf 'number: %s\n' "$number"
+          printf 'mergeable_state: %s\n' "$(printf '%s' "$pstate" | tr '[:upper:]' '[:lower:]')"
+          printf 'base:\n'
+          printf '  ref: %s\n' "$pbase"
+          printf '  sha: 0000000000000000000000000000000000000000\n'
+          printf 'head:\n'
+          printf '  ref: test-branch\n'
+          printf '  sha: %s\n' "$phead"
+          exit 0
+        fi
+      done <<< "${TEST_REBASE_PR_LIST:-}"
+      exit 0
+      ;;
+    */compare/*)
+      compare_part="${url##*/compare/}"
+      head="${compare_part#*...}"
+      var="TEST_REBASE_BEHIND_${head}"
+      printf 'behind_by: %s\n' "${!var:-0}"
+      exit 0
+      ;;
+  esac
   exit 0
 fi
 
@@ -199,10 +240,10 @@ test_gh_failure_degrades_gracefully() {
   rc=$?
   set -e
 
-  [ "$rc" -eq 0 ] || fail "gh-axi failure should not cause non-zero exit, got $rc"
+  [ "$rc" -eq 0 ] || fail "gh-axiom failure should not cause non-zero exit, got $rc"
   assert_contains "$out" "epsilon: skipped: gh-axi pr list failed" \
-    "gh-axi failure should produce a skip line, not an error"
-  pass "gh-axi failure degrades to a skip line without erroring the sweep"
+    "gh-axiom failure should produce a skip line, not an error"
+  pass "gh-axiom failure degrades to a skip line without erroring the sweep"
 }
 
 test_non_github_origin_skipped() {
@@ -312,17 +353,17 @@ test_ssh_remote_url_parsed() {
 test_no_origin_skipped() {
   local home fakebin out clone
   home=$(new_home)
-  clone="$home/projects/theta"
+  clone="$home/projects/nu"
   git init -q "$clone"
   git -C "$clone" symbolic-ref HEAD refs/heads/main
   git -C "$clone" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
     commit -q --allow-empty -m C0
   fakebin=$(build_fakebin "$home")
 
-  out=$(run_sweep "$home" "$fakebin" "theta" \
+  out=$(run_sweep "$home" "$fakebin" "nu" \
     "TEST_REBASE_PR_LIST=$(pr_row 332 DIRTY main abc332)")
 
-  assert_contains "$out" "theta: skipped: no origin remote" \
+  assert_contains "$out" "nu: skipped: no origin remote" \
     "missing origin should be skipped"
   pass "no origin remote is skipped (best-effort)"
 }
@@ -347,8 +388,6 @@ test_too_many_args_refuses() {
   home=$(new_home)
   fakebin=$(build_fakebin "$home")
 
-  # Invoke the sweep directly with two positional args (not var=value pairs),
-  # since run_sweep reserves extra args for TEST_REBASE_* env injection.
   set +e
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$SWEEP" "one" "two" >/dev/null 2>&1

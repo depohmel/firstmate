@@ -7,7 +7,7 @@
 # or otherwise write to any branch: it only reports; a crew owns its own branch.
 #
 # Like fm-fleet-sync.sh, this sweep is best-effort and never blocks teardown on
-# its success: a gh-axi failure degrades to a single skip line rather than an
+# its success: a gh-axiom failure degrades to a single skip line rather than an
 # error.
 #
 # Usage: fm-rebase-sweep.sh [<project-dir-or-name>]
@@ -103,13 +103,33 @@ remote_to_owner_repo() {
 behind_by_count() {
   local owner=$1 repo=$2 base=$3 head=$4
   [ -n "$base" ] && [ -n "$head" ] || return 1
-  gh-axi api "/repos/${owner}/${repo}/compare/${base}...${head}" -q '.behind_by' 2>/dev/null
+  local result
+  result=$(gh-axi api "/repos/${owner}/${repo}/compare/${base}...${head}" 2>/dev/null \
+    | awk '/^behind_by:/ {print $2}')
+  [ -n "$result" ] || return 1
+  printf '%s\n' "$result"
 }
 
 # report_pr <label> <number> <state> <behind>: print one actionable line for a
 # PR that needs a rebase.
 report_pr() {
   printf '%s: PR #%s %s behind=%s rebase-needed\n' "$1" "$2" "$3" "$4"
+}
+
+# extract_field <details> <field>: extract a top-level field value from
+# gh-axi api text output (e.g., "mergeable_state" from "mergeable_state: clean").
+extract_field() {
+  printf '%s\n' "$1" | awk -v f="$2" '$0 ~ "^"f":" {sub(/^[^:]*:[[:space:]]*/, ""); print; exit}'
+}
+
+# extract_nested_field <details> <parent> <field>: extract a nested field value
+# from gh-axiom api text output (e.g., "base" "ref" for base.ref).
+extract_nested_field() {
+  printf '%s\n' "$1" | awk -v p="$2" -v f="$3" '
+    $0 ~ "^"p":" {in_p=1; next}
+    in_p && $0 ~ "^  "f":" {sub(/^  [^:]*:[[:space:]]*/, ""); print; exit}
+    in_p && $0 !~ /^  / {in_p=0}
+  '
 }
 
 sweep_project() {
@@ -146,21 +166,35 @@ sweep_project() {
     return 0
   fi
 
-  # List all open PRs with the fields we need. Each line is tab-separated:
-  # number<TAB>mergeableState<TAB>baseRefName<TAB>headRefOid
-  # mergeableState is "UNKNOWN" when GitHub hasn't computed it yet.
-  pr_listing=$(gh-axi pr list --state open --repo "${owner}/${repo}" \
-    --limit 1000 \
-    --json number,mergeable,mergeableState,baseRefName,headRefOid \
-    --jq '.[] | [.number, (.mergeableState // "UNKNOWN"), (.baseRefName // ""), (.headRefOid // "")] | @tsv' \
-    2>/dev/null) || {
+  # List all open PRs. gh-axiom's text format puts each PR row on a line
+  # like "  324," in the pull_requests section. Extract just the numbers.
+  pr_listing=$(gh-axi pr list --state open -R "${owner}/${repo}" --limit 1000 2>/dev/null) || {
     echo "$label: skipped: gh-axi pr list failed"
     return 0
   }
   [ -n "$pr_listing" ] || return 0
 
-  while IFS=$'\t' read -r number state base head; do
+  pr_numbers=$(printf '%s\n' "$pr_listing" \
+    | awk '/^[[:space:]]*[0-9]+,/ {split($0, a, ","); gsub(/[[:space:]]/, "", a[1]); print a[1]}')
+
+  [ -n "$pr_numbers" ] || return 0
+
+  # For each PR, get details via gh-axiom api and check if it needs a rebase.
+  while IFS= read -r number; do
     [ -n "$number" ] || continue
+
+    details=$(gh-axi api "/repos/${owner}/${repo}/pulls/${number}" 2>/dev/null) || continue
+    [ -n "$details" ] || continue
+
+    # mergeable_state from gh-axiom api is lowercase (e.g., "clean", "dirty").
+    # Normalize to uppercase for reporting.
+    state=$(extract_field "$details" "mergeable_state" | tr '[:lower:]' '[:upper:]')
+    if [ -z "$state" ]; then
+      state="UNKNOWN"
+    fi
+    base=$(extract_nested_field "$details" "base" "ref")
+    head=$(extract_nested_field "$details" "head" "sha")
+
     case "$state" in
       # DIRTY or BEHIND: GitHub has confirmed the PR conflicts or is behind the
       # base. A rebase is needed; report it with the behind count.
@@ -180,7 +214,7 @@ sweep_project() {
       # CLEAN, UNSTABLE, BLOCKED, HAS_HOOKS: no rebase needed. Be silent.
       *) : ;;
     esac
-  done <<<"$pr_listing"
+  done <<<"$pr_numbers"
 }
 
 if [ $# -eq 1 ]; then
