@@ -542,8 +542,130 @@ test_stalled_runstep_threshold_override() {
   pass "threshold override honoured"
 }
 
+# --- Tests: no-progress crew ------------------------------------------------
+
+# Helper: set mtime of a file to N seconds ago.
+set_mtime_ago() {  # <file> <secs>
+  local file=$1 secs=$2 epoch
+  epoch=$(( $(date +%s) - secs ))
+  touch -d "@$epoch" "$file" 2>/dev/null || touch "$file"
+}
+
+# Helper: create a worktree with a file at <secs> old.
+make_stale_worktree() {  # <repo> <worktree> <branch> <secs>
+  local repo=$1 worktree=$2 branch=$3 secs=$4 epoch
+  epoch=$(( $(date +%s) - secs ))
+  fm_git_identity
+  fm_git_worktree "$repo" "$worktree" "$branch"
+  printf 'worktree content\n' > "$worktree/file.txt"
+  git -C "$worktree" add file.txt 2>/dev/null
+  GIT_AUTHOR_DATE="@$epoch" GIT_COMMITTER_DATE="@$epoch" \
+    git -C "$worktree" commit -qm "add file" 2>/dev/null
+  # Set all worktree file mtimes (excluding .git) to <secs> ago
+  find "$worktree" -mindepth 1 \
+    -not -name ".git" -not -path "*/.git/*" \
+    -type f -exec touch -d "@$epoch" {} + 2>/dev/null || true
+}
+
+test_no_progress_crew_detected() {
+  local home repo worktree id log
+  home=$(make_home no-progress)
+  repo="$TMP_ROOT/repo-noprog"
+  worktree="$TMP_ROOT/wt-noprog"
+
+  # Worktree with a file 2 hours old; no-mistakes not running (no fake NM).
+  # Status file says working: so crew_is_busy returns true.
+  make_stale_worktree "$repo" "$worktree" feat-noprog 7200
+
+  id=test-noprog
+  fm_write_meta "$home/state/$id.meta" \
+    "worktree=$worktree" "project=$repo" "kind=ship"
+  printf 'working: working on task\n' > "$home/state/$id.status"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_grep "no-progress:$id:WOULD-escalate" "$log" "no-progress crew must be escalated"
+  pass "no-progress crew detected"
+}
+
+test_no_progress_crew_active_not_flagged() {
+  local home repo worktree id log
+  home=$(make_home no-progress-fresh)
+  repo="$TMP_ROOT/repo-noprog-fresh"
+  worktree="$TMP_ROOT/wt-noprog-fresh"
+
+  # Worktree with a file 5 minutes old; well within threshold.
+  make_stale_worktree "$repo" "$worktree" feat-noprog-fresh 300
+
+  id=test-noprog-fresh
+  fm_write_meta "$home/state/$id.meta" \
+    "worktree=$worktree" "project=$repo" "kind=ship"
+  printf 'working: working on task\n' > "$home/state/$id.status"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_no_grep "no-progress:$id:WOULD-escalate" "$log" "active crew must not be flagged"
+  pass "actively-editing crew not flagged"
+}
+test_no_progress_threshold_override() {
+  local home repo worktree id log
+  home=$(make_home no-progress-thr)
+  repo="$TMP_ROOT/repo-noprog-thr"
+  worktree="$TMP_ROOT/wt-noprog-thr"
+
+  # 600s old, below 1800 default but above 300 override.
+  make_stale_worktree "$repo" "$worktree" feat-noprog-thr 600
+
+  id=test-noprog-thr
+  fm_write_meta "$home/state/$id.meta" \
+    "worktree=$worktree" "project=$repo" "kind=ship"
+  printf 'working: working on task\n' > "$home/state/$id.status"
+
+  # With threshold 1800, 600s is below -> not flagged.
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_no_grep "no-progress:$id:WOULD-escalate" "$log" "600s below 1800s threshold should not flag"
+
+  # With threshold 300, 600s exceeds it -> flagged.
+  rm -f "$home/state/.bosun.log" "$home/state/.bosun-state/$id.no-progress"
+  FM_BOSUN_NPROGRESS_SECS=300 \
+    PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_BOSUN_FAKE_GH_DIR="$home/gh-fixtures" \
+    FM_BOSUN_FAKE_NM_DIR="$home/nm-fixtures" \
+    FM_BOSUN_DRY_RUN=1 "$BOSUN"
+  log="$home/state/.bosun.log"
+  assert_grep "no-progress:$id:WOULD-escalate" "$log" "600s exceeds 300s threshold should flag"
+  pass "no-progress threshold override honoured"
+}
+test_no_progress_crew_not_flagged_when_idle() {
+  local home repo worktree id log
+  home=$(make_home no-progress-idle)
+  repo="$TMP_ROOT/repo-noprog-idle"
+  worktree="$TMP_ROOT/wt-noprog-idle"
+
+  make_stale_worktree "$repo" "$worktree" feat-noprog-idle 7200
+
+  id=test-noprog-idle
+  fm_write_meta "$home/state/$id.meta" \
+    "worktree=$worktree" "project=$repo" "kind=ship"
+  # Status file says done: -> crew_is_busy returns false -> not checked.
+  printf 'done: all work complete\n' > "$home/state/$id.status"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_no_grep "no-progress:$id:WOULD-escalate" "$log" "idle (done) crew must not be flagged"
+  pass "no-progress not flagged when crew is idle"
+}
+
 # --- Run all tests ---
 
+test_no_progress_crew_detected
+test_no_progress_crew_active_not_flagged
+test_no_progress_threshold_override
+test_no_progress_crew_not_flagged_when_idle
 test_stalled_runstep_detected
 test_stalled_runstep_fresh_step_not_flagged
 test_stalled_runstep_no_agent_pid
