@@ -179,12 +179,14 @@ shell_quote() {
 fm_brief_mind_map_ref() {
   local repo=$1
   local latest
+  # shellcheck disable=SC2012 # ls -t intentionally sorts by mtime to find the newest mind map report.
   latest=$(ls -t "$FM_HOME/data/${repo}-mind-map-"*/report.md 2>/dev/null | head -1)
   if [ -z "$latest" ]; then
     printf '_(No project mind map exists yet.)_\n'
     return
   fi
   local rel="${latest#"$FM_HOME"/}"
+  # shellcheck disable=SC2016 # single quotes are deliberate: percent-s and backslash-n are printf format specifiers, not shell expansions.
   printf 'Before touching any file, read `%s` — a one-page map of the whole repo. It answers "where does X live?" faster than exploring the tree.\n' "$rel"
 }
 
