@@ -18,6 +18,11 @@ TMP_ROOT=$(fm_test_tmproot fm-bosun)
 make_home() {
   local home="$TMP_ROOT/$1"
   mkdir -p "$home/state" "$home/fakebin" "$home/gh-fixtures"
+  mkdir -p "$home/nm-fixtures"
+  printf '#!/usr/bin/env bash
+exit 0
+' > "$home/fakebin/no-mistakes"
+  chmod +x "$home/fakebin/no-mistakes"
   printf '%s\n' "$home"
 }
 
@@ -26,7 +31,18 @@ run_bosun() {
   local home=$1
   PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_ROOT_OVERRIDE="$ROOT" FM_BOSUN_FAKE_GH_DIR="$home/gh-fixtures" \
+    FM_BOSUN_FAKE_NM_DIR="$home/nm-fixtures" \
     FM_BOSUN_DRY_RUN=1 "$BOSUN"
+}
+
+# write_fake_nm <home>: create a fake no-mistakes that cats the fixture file.
+write_fake_nm() {  # <home>
+  local home=$1
+  cat > "$home/fakebin/no-mistakes" <<'FAKENM'
+#!/usr/bin/env bash
+cat "$FM_BOSUN_FAKE_NM_DIR/axi_status" 2>/dev/null
+FAKENM
+  chmod +x "$home/fakebin/no-mistakes"
 }
 
 # write_fake_gh <home> <head_oid> <commit_date> <review_ts> <changes_count> [pr_state]
@@ -386,8 +402,152 @@ test_pr_readiness_no_reviews_yet() {
   pass "PR readiness: no reviews yet is detected"
 }
 
+# --- Tests: stalled run-step (fake no-mistakes) -------------------------
+
+# Fixture: axi status with a running ci step, quiet 3h58m, agent pid present.
+stale_axi_status() {
+  cat <<'EOF'
+run:
+  id: "test-run-id"
+  branch: feat-test
+  status: running
+  head: abc1234
+  findings: none
+  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}:
+    ci,running,4h01m,"quiet 3h58m ago","12345",1
+EOF
+}
+
+# Fixture: axi status with a running ci step, 14s ago, agent pid present.
+fresh_axi_status() {
+  cat <<'EOF'
+run:
+  id: "test-run-id"
+  branch: feat-test
+  status: running
+  head: abc1234
+  findings: none
+  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}:
+    ci,running,14s,"14s ago: log: working","12345",1
+EOF
+}
+
+# Fixture: axi status with a running ci step, 14s ago, empty agent pid.
+nopid_axi_status() {
+  cat <<'EOF'
+run:
+  id: "test-run-id"
+  branch: feat-test
+  status: running
+  head: abc1234
+  findings: none
+  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}:
+    ci,running,14s,"14s ago: log: working","",1
+EOF
+}
+
+test_stalled_runstep_detected() {
+  local home repo worktree id log
+  home=$(make_home stalled-runstep)
+  repo="$TMP_ROOT/repo-stalled"
+  worktree="$TMP_ROOT/wt-stalled"
+
+  fm_git_identity
+  fm_git_worktree "$repo" "$worktree" feat-stalled
+
+  id=test-stalled
+  fm_write_meta "$home/state/$id.meta"     "worktree=$worktree" "project=$repo" "kind=ship"
+
+  stale_axi_status > "$home/nm-fixtures/axi_status"
+  write_fake_nm "$home"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_grep "stalled:$id:WOULD-escalate" "$log" "stalled run-step must be escalated in dry-run"
+  pass "stalled run-step detected and escalated"
+}
+
+test_stalled_runstep_fresh_step_not_flagged() {
+  local home repo worktree id log
+  home=$(make_home stalled-fresh)
+  repo="$TMP_ROOT/repo-fresh"
+  worktree="$TMP_ROOT/wt-fresh"
+
+  fm_git_identity
+  fm_git_worktree "$repo" "$worktree" feat-fresh
+
+  id=test-fresh
+  fm_write_meta "$home/state/$id.meta"     "worktree=$worktree" "project=$repo" "kind=ship"
+
+  fresh_axi_status > "$home/nm-fixtures/axi_status"
+  write_fake_nm "$home"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_no_grep "stalled:$id:WOULD-escalate" "$log" "fresh run-step must not be escalated"
+  pass "fresh run-step not flagged"
+}
+
+test_stalled_runstep_no_agent_pid() {
+  local home repo worktree id log
+  home=$(make_home stalled-nopid)
+  repo="$TMP_ROOT/repo-nopid"
+  worktree="$TMP_ROOT/wt-nopid"
+
+  fm_git_identity
+  fm_git_worktree "$repo" "$worktree" feat-nopid
+
+  id=test-nopid
+  fm_write_meta "$home/state/$id.meta"     "worktree=$worktree" "project=$repo" "kind=ship"
+
+  nopid_axi_status > "$home/nm-fixtures/axi_status"
+  write_fake_nm "$home"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_grep "stalled:$id:WOULD-escalate" "$log" "empty agent_pid must be escalated"
+  pass "stalled run-step with no agent pid detected"
+}
+
+test_stalled_runstep_threshold_override() {
+  local home repo worktree id log
+  home=$(make_home stalled-threshold)
+  repo="$TMP_ROOT/repo-threshold"
+  worktree="$TMP_ROOT/wt-threshold"
+
+  fm_git_identity
+  fm_git_worktree "$repo" "$worktree" feat-threshold
+
+  id=test-threshold
+  fm_write_meta "$home/state/$id.meta"     "worktree=$worktree" "project=$repo" "kind=ship"
+
+  stale_axi_status > "$home/nm-fixtures/axi_status"
+  write_fake_nm "$home"
+
+  # 3h58m (13080s) exceeds 3600s threshold -> flagged
+  FM_BOSUN_STALL_SECS=3600     PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state"     FM_ROOT_OVERRIDE="$ROOT" FM_BOSUN_FAKE_GH_DIR="$home/gh-fixtures"     FM_BOSUN_FAKE_NM_DIR="$home/nm-fixtures"     FM_BOSUN_DRY_RUN=1 "$BOSUN"
+
+  log="$home/state/.bosun.log"
+  assert_grep "stalled:$id:WOULD-escalate" "$log" "3h58m quiet should exceed 3600s threshold"
+
+  # 13080s does NOT exceed 99999s threshold -> not flagged
+  rm -f "$home/state/.bosun.log" "$home/state/.bosun-state/$id.stalled"
+  FM_BOSUN_STALL_SECS=99999     PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state"     FM_ROOT_OVERRIDE="$ROOT" FM_BOSUN_FAKE_GH_DIR="$home/gh-fixtures"     FM_BOSUN_FAKE_NM_DIR="$home/nm-fixtures"     FM_BOSUN_DRY_RUN=1 "$BOSUN"
+
+  log="$home/state/.bosun.log"
+  assert_no_grep "stalled:$id:WOULD-escalate" "$log" "threshold override: large threshold should prevent flagging"
+  pass "threshold override honoured"
+}
+
 # --- Run all tests ---
 
+test_stalled_runstep_detected
+test_stalled_runstep_fresh_step_not_flagged
+test_stalled_runstep_no_agent_pid
+test_stalled_runstep_threshold_override
 test_uncommitted_work_threshold_triggers_steer
 test_uncommitted_work_below_threshold_does_not_steer
 test_uncommitted_work_no_changes_clears_marker
