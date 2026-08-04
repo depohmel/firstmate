@@ -45,6 +45,16 @@ check can fail (i.e. produce a negative verdict); a predicate that can never say
 6. **Stale teardown** — A task whose PR is merged but whose worktree still
    exists is recorded for firstmate; **the bosun never tears down a worktree**.
 
+7. **Stalled run-step** — A no-mistakes step whose status is `running` but
+   whose `last_activity` is older than `FM_BOSUN_STALL_SECS` (default 1800),
+   or which has an empty `agent_pid`, is escalated. Uses `no-mistakes axi
+   status` to read the `active_steps` table.
+
+8. **No-progress crew** — A crew whose worktree has had no file modification
+   (excluding `.git`) and no new commit for longer than
+   `FM_BOSUN_NPROGRESS_SECS` (default 1800), while the crew is still busy
+   (running step or non-terminal status), is escalated.
+
 ## Hard safety boundaries
 
 - Never merges a PR, never approves or dismisses a review finding, never
@@ -68,6 +78,9 @@ check can fail (i.e. produce a negative verdict); a predicate that can never say
 | `FM_BOSUN_PARKED_BACKOFF_MAX` | `86400` | Maximum re-escalation backoff |
 | `FM_BOSUN_STEER_INTERVAL` | `600` | Rate-cap for all steers per task |
 | `FM_BOSUN_LOG_MAX_BYTES` | `1048576` | Action-log rotation threshold |
+| `FM_BOSUN_STALL_SECS` | `1800` | Stalled run-step quiet threshold |
+| `FM_BOSUN_NPROGRESS_SECS` | `1800` | No-progress worktree-stale threshold |
+| `FM_BOSUN_NM_TIMEOUT` | `10` | Timeout for `no-mistakes axi status` |
 
 ## Dry run
 
