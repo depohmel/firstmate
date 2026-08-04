@@ -21,7 +21,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
-"$FM_ROOT/bin/fm-guard.sh" || true
+# This sweep is read-only: it never writes to branches. It is safe to invoke
+# from any cwd, including inside a worktree, so it does not call fm-guard.sh.
 
 usage() {
   echo "usage: fm-rebase-sweep.sh [<project-dir-or-name>]" >&2

@@ -398,6 +398,26 @@ test_too_many_args_refuses() {
   pass "too many arguments is refused"
 }
 
+test_fm_home_resolved_from_environment() {
+  # When FM_HOME is set in the environment, the sweep must use it rather than
+  # falling back to FM_ROOT (the script's own parent dir). This makes the
+  # sweep safe to invoke from anywhere, including inside a worktree on a
+  # feature branch, without tripping the tangle guard.
+  local home fakebin rc
+  home=$(new_home)
+  fakebin=$(build_fakebin "$home")
+  build_clone "$home" phi "https://github.com/testorg/phi.git" >/dev/null
+
+  set +e
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$SWEEP" "phi" >/dev/null 2>&1
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "sweep should use FM_HOME from environment"
+  pass "FM_HOME resolved from environment (worktree-safe)"
+}
+
 test_conflicting_pr_reported
 test_behind_but_clean_pr_reported
 test_clean_pr_is_silent
@@ -411,5 +431,6 @@ test_local_only_project_skipped
 test_single_project_by_bare_name
 test_ssh_remote_url_parsed
 test_no_origin_skipped
+test_fm_home_resolved_from_environment
 test_help_flag
 test_too_many_args_refuses
