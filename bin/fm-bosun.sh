@@ -411,23 +411,23 @@ _nm_axi_field() {  # <output> <field>
 _nm_parse_active_steps() {  # <output>
   local in_table=0 line
   while IFS= read -r line; do
-    case "$line" in
-      *'active_steps['*) in_table=1; continue ;;
-    esac
+    [ -z "$line" ] && continue
+    if [[ "$line" == *'active_steps['* ]]; then
+      in_table=1
+      continue
+    fi
     if [ "$in_table" = 1 ]; then
-      case "$line" in
-        '  '*'"'*) : ;; # another TOON table header at 2-space indent
-        '  '*) in_table=0 ;; # new top-level field, table ended
-      esac
-      if [ "$in_table" = 1 ] && [[ "$line" =~ ^[[:space:]]{4}[^[:space:]] ]]; then
-        if [[ "$line" =~ ^[[:space:]]*([^,]+),([^,]+),([^,]+),\"([^\"]*)\",\"([^\"]*)\" ]]; then
-          printf '%s|%s|%s|%s|%s\n' \
-            "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" \
-            "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}" "${BASH_REMATCH[5]}"
-        fi
+      if [[ ! "$line" =~ ^[[:space:]]{4} ]]; then
+        in_table=0
+        continue
+      fi
+      if [[ "$line" =~ ^[[:space:]]*([^,]+),([^,]+),([^,]+),\"([^\"]*)\",\"([^\"]*)\" ]]; then
+        printf '%s|%s|%s|%s|%s\n' \
+          "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" \
+          "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}" "${BASH_REMATCH[5]}"
       fi
     fi
-  done <<< "$1"
+  done < <(printf '%s\n' "$1")
 }
 
 # Convert a Go-style duration (4h01m, 14s, 30m) to seconds.
