@@ -176,6 +176,18 @@ shell_quote() {
   printf "'"
 }
 
+fm_brief_mind_map_ref() {
+  local repo=$1
+  local latest
+  latest=$(ls -t "$FM_HOME/data/${repo}-mind-map-"*/report.md 2>/dev/null | head -1)
+  if [ -z "$latest" ]; then
+    printf '_(No project mind map exists yet.)_\n'
+    return
+  fi
+  local rel="${latest#"$FM_HOME"/}"
+  printf 'Before touching any file, read `%s` — a one-page map of the whole repo. It answers "where does X live?" faster than exploring the tree.\n' "$rel"
+}
+
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 
 if [ "$KIND" = secondmate ]; then
@@ -306,6 +318,11 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 $HERDR_SECTION
 
+## Reference — project mind map
+
+$(fm_brief_mind_map_ref "$REPO")
+
+
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
 This is a SCOUT task: the deliverable is a written report, not a PR.
@@ -414,6 +431,11 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 {TASK}
 
 $HERDR_SECTION
+
+## Reference — project mind map
+
+$(fm_brief_mind_map_ref "$REPO")
+
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
