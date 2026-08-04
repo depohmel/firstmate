@@ -1,0 +1,3 @@
+# project	ssh-host	remote-checkout	binary-path	process-pattern
+famclaw	homelab	~/Workspace/famclaw	~/Workspace/famclaw/bin/famclaw	bin/famclaw --config
+camp-plan-generator	localhost	/home/dep/tools/firstmate/projects/camp-plan-generator

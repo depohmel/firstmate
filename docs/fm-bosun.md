@@ -38,7 +38,9 @@ check can fail (i.e. produce a negative verdict); a predicate that can never say
    `FM_BOSUN_PARKED_BACKOFF_MAX` (default 86400) until the status clears.
 
 5. **Deploy drift** — Shells out to `bin/fm-deploy-drift.sh` (if present) and
-   surfaces any output through the same escalation path.
+   surfaces any output through the same escalation path. The script reads
+   `config/deploy-targets.tsv`; a documented example is shipped at
+   [docs/examples/deploy-targets.tsv](examples/deploy-targets.tsv).
 
 6. **Stale teardown** — A task whose PR is merged but whose worktree still
    exists is recorded for firstmate; **the bosun never tears down a worktree**.
