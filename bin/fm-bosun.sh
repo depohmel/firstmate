@@ -20,6 +20,9 @@
 #   FM_BOSUN_PARKED_BACKOFF_MAX  max re-escalation backoff (default 86400)
 #   FM_BOSUN_STEER_INTERVAL    rate cap for steers in seconds (default 600)
 #   FM_BOSUN_LOG_MAX_BYTES     log rotation threshold (default 1048576)
+#   FM_BOSUN_STALL_SECS        stalled run-step quiet threshold (default 1800)
+#   FM_BOSUN_NPROGRESS_SECS    no-progress worktree-stale threshold (default 1800)
+#   FM_BOSUN_NM_TIMEOUT        no-mistakes cli call timeout in seconds (default 10)
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,6 +37,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 : "${FM_BOSUN_PARKED_BACKOFF_MAX:=86400}"
 : "${FM_BOSUN_STEER_INTERVAL:=600}"
 : "${FM_BOSUN_LOG_MAX_BYTES:=1048576}"
+: "${FM_BOSUN_STALL_SECS:=1800}"
+: "${FM_BOSUN_NPROGRESS_SECS:=1800}"
+: "${FM_BOSUN_NM_TIMEOUT:=10}"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
@@ -353,6 +359,149 @@ check_stale_teardown() {  # <id> <meta>
   fi
 }
 
+# --- no-mistakes axi status helpers ---------------------------------------
+
+NM_AXI_CACHE_ID=""
+NM_AXI_CACHE_OUT=""
+NM_AXI_STATUS=""
+
+# Run `no-mistakes axi status` in the worktree for <id>/<meta>, caching the
+# result so multiple checks share one call. Only runs for kind=ship tasks on
+# a branch with no-mistakes installed.
+bosun_get_axi_status() {  # <id> <meta>
+  local id=$1 meta=$2 wt kind branch
+  if [ "${NM_AXI_CACHE_ID:-}" = "$id" ]; then
+    return 0
+  fi
+  NM_AXI_CACHE_ID="$id" NM_AXI_CACHE_OUT="" NM_AXI_STATUS=""
+  wt=$(fm_meta_get "$meta" worktree) || true
+  [ -n "$wt" ] || return 0
+  [ -d "$wt" ] || return 0
+  kind=$(fm_meta_get "$meta" kind) || true
+  [ -n "$kind" ] || kind=ship
+  [ "$kind" = ship ] || return 0
+  branch=$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  [ -n "$branch" ] || return 0
+  command -v no-mistakes >/dev/null 2>&1 || return 0
+  if command -v timeout >/dev/null 2>&1; then
+    NM_AXI_CACHE_OUT=$(cd "$wt" && timeout "$FM_BOSUN_NM_TIMEOUT" no-mistakes axi status 2>/dev/null) || NM_AXI_CACHE_OUT=""
+  else
+    NM_AXI_CACHE_OUT=$(cd "$wt" && no-mistakes axi status 2>/dev/null) || NM_AXI_CACHE_OUT=""
+  fi
+  if [ -n "$NM_AXI_CACHE_OUT" ]; then
+    NM_AXI_STATUS=$(printf '%s\n' "$NM_AXI_CACHE_OUT" | sed -n 's/^[[:space:]]*status:[[:space:]]*//p' | head -1)
+    case "$NM_AXI_STATUS" in *'"'*) NM_AXI_STATUS=${NM_AXI_STATUS#'"'}; NM_AXI_STATUS=${NM_AXI_STATUS%'"'} ;; esac
+    NM_AXI_STATUS="${NM_AXI_STATUS#"${NM_AXI_STATUS%%[![:space:]]*}"}"
+    NM_AXI_STATUS="${NM_AXI_STATUS%"${NM_AXI_STATUS##*[![:space:]]}"}"
+  fi
+}
+
+# Extract a scalar field from axi status output.
+_nm_axi_field() {  # <output> <field>
+  local out=$1 field=$2 val
+  val=$(printf '%s\n' "$out" | sed -n "s/^[[:space:]]*${field}:[[:space:]]*//p" | head -1)
+  case "$val" in *'"'*) val=${val#'"'}; val=${val%'"'} ;; esac
+  val="${val#"${val%%[![:space:]]*}"}"
+  val="${val%"${val##*[![:space:]]}"}"
+  printf '%s' "$val"
+}
+
+# Parse the active_steps table from axi status output.
+# Prints one line per step: step|status|active_for|last_activity|agent_pid
+_nm_parse_active_steps() {  # <output>
+  local in_table=0 line
+  while IFS= read -r line; do
+    case "$line" in
+      *'active_steps['*) in_table=1; continue ;;
+    esac
+    if [ "$in_table" = 1 ]; then
+      case "$line" in
+        '  '*'"'*) : ;; # another TOON table header at 2-space indent
+        '  '*) in_table=0 ;; # new top-level field, table ended
+      esac
+      if [ "$in_table" = 1 ] && [[ "$line" =~ ^[[:space:]]{4}[^[:space:]] ]]; then
+        if [[ "$line" =~ ^[[:space:]]*([^,]+),([^,]+),([^,]+),\"([^\"]*)\",\"([^\"]*)\" ]]; then
+          printf '%s|%s|%s|%s|%s\n' \
+            "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" \
+            "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}" "${BASH_REMATCH[5]}"
+        fi
+      fi
+    fi
+  done <<< "$1"
+}
+
+# Convert a Go-style duration (4h01m, 14s, 30m) to seconds.
+_nm_duration_to_secs() {  # <dur>
+  local dur=$1 secs=0 val
+  if [[ "$dur" =~ ([0-9]+)h ]]; then val=${BASH_REMATCH[1]}; secs=$((secs + val * 3600)); fi
+  if [[ "$dur" =~ ([0-9]+)m ]]; then val=${BASH_REMATCH[1]}; secs=$((secs + val * 60));  fi
+  if [[ "$dur" =~ ([0-9]+)s ]]; then val=${BASH_REMATCH[1]}; secs=$((secs + val));       fi
+  printf '%s' "$secs"
+}
+
+# Extract a duration token from a last_activity string.
+# "14s ago: log: ..." -> 14s ; "quiet 3h58m ago" -> 3h58m
+_nm_extract_activity_dur() {  # <last_activity>
+  local la=$1 dur
+  la=${la#quiet }
+  if [[ "$la" =~ ^([0-9]+h)?([0-9]+m)?([0-9]+s)? ]]; then
+    dur="${BASH_REMATCH[1]}${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+  else
+    dur=""
+  fi
+  printf '%s' "$dur"
+}
+
+# --- Check: stalled run-step ----------------------------------------------
+
+# A no-mistakes step whose status is "running" but whose last_activity is
+# older than FM_BOSUN_STALL_SECS, or which has an empty agent_pid, is
+# escalated the same way parked work is (stale-kind wake, rate-capped).
+check_stalled_runstep() {  # <id> <meta>
+  local id=$1 meta=$2 out status
+  bosun_get_axi_status "$id" "$meta"
+  out="$NM_AXI_CACHE_OUT"
+  [ -n "$out" ] || return 0
+  status="$NM_AXI_STATUS"
+  [ "$status" = running ] || return 0
+
+  local step fstatus active_for last_activity pid dur secs
+  # shellcheck disable=SC2034  # active_for is read to advance fields, not used
+  while IFS='|' read -r step fstatus active_for last_activity pid; do
+    [ -n "$step" ] || continue
+    case "$fstatus" in
+      running|fixing) ;; *) continue ;;
+    esac
+    if [ -z "$pid" ]; then
+      _escalate_stalled "$id" "no-agent-pid step=$step"
+      continue
+    fi
+    dur=$(_nm_extract_activity_dur "$last_activity")
+    if [ -n "$dur" ]; then
+      secs=$(_nm_duration_to_secs "$dur")
+      if [ "$secs" -ge "$FM_BOSUN_STALL_SECS" ]; then
+        _escalate_stalled "$id" "quiet=${secs}s step=$step threshold=$FM_BOSUN_STALL_SECS"
+      fi
+    fi
+  done < <(_nm_parse_active_steps "$out")
+}
+
+_escalate_stalled() {  # <id> <reason>
+  local id=$1 reason=$2
+  if [ "$(bosun_state_age "$id" stalled)" -lt "$FM_BOSUN_STEER_INTERVAL" ]; then
+    bosun_log "stalled:$id:rate-capped reason=$reason"
+    return 0
+  fi
+  if [ "$FM_BOSUN_DRY_RUN" = 1 ]; then
+    bosun_log "stalled:$id:WOULD-escalate reason=$reason"
+  else
+    fm_wake_append "stale" "$id.status" \
+      "BOSUN-ESCALATION: stalled run-step: $reason" 2>/dev/null || true
+    bosun_log "stalled:$id:escalated reason=$reason"
+  fi
+  bosun_state_set "$id" stalled "1"
+}
+
 # --- Main ---
 main() {
   bosun_log "cycle:start dry-run=$FM_BOSUN_DRY_RUN"
@@ -366,6 +515,7 @@ main() {
     check_unpushed_commits "$id" "$meta"
     check_parked_work "$id"
     check_stale_teardown "$id" "$meta"
+    check_stalled_runstep "$id" "$meta"
   done
 
   check_deploy_drift
