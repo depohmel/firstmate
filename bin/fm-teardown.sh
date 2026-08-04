@@ -1690,6 +1690,7 @@ rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.kimi-turnend-token"
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
+  "$FM_ROOT/bin/fm-rebase-sweep.sh" "$PROJ" || true
 fi
 echo "teardown $ID complete (window $T, worktree $WT)"
 backlog_refresh_reminder
