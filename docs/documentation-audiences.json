@@ -240,6 +240,10 @@
       "audience": "operator-example"
     },
     {
+      "path": "docs/examples/deploy-targets.tsv",
+      "audience": "operator-example"
+    },
+    {
       "path": "docs/examples/wedge-alarm",
       "audience": "operator-example"
     },
@@ -250,6 +254,10 @@
     {
       "path": "docs/fm-test-portable-shards.md",
       "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/fm-bosun.md",
+      "audience": "operator-current"
     },
     {
       "path": "docs/gitlab-merge-watch.md",
