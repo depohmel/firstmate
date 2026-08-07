@@ -45,17 +45,22 @@ FAKENM
   chmod +x "$home/fakebin/no-mistakes"
 }
 
-# write_fake_gh <home> <head_oid> <commit_date> <review_ts> <changes_count> [pr_state]
+# write_fake_gh <home> <head_oid> <commit_date> <review_ts> <changes_count> [pr_state] [issue_comment_bodies] [issue_comment_ts]
 # Creates a fake gh that dispatches on arguments, reading canned output from
 # one fixture file per case. The fixture files hold the already-filtered output
-# (what gh would return after applying --jq / -q).
+# (what gh would return after applying --jq / -q). When $4 (the --jq filter)
+# contains "body", body fixtures are returned instead of timestamp fixtures.
 write_fake_gh() {
   local home=$1 head_oid=$2 commit_date=$3 review_ts=$4 changes_count=$5
   local pr_state=${6:-OPEN}
+  local issue_bodies=${7:-}
+  local issue_ts=${8:-}
   local gh="$home/fakebin/gh"
   cat >"$gh" <<'FAKEGH'
 #!/usr/bin/env bash
 # Fake gh for fm-bosun tests. One fixture file per case; just cats.
+# The jq filter ($4) is inspected to dispatch between timestamp and body
+# extraction on the same endpoint.
 case "$1" in
   pr)
     case "$5" in
@@ -70,7 +75,18 @@ case "$1" in
       */reviews)
         case "$4" in
           *CHANGES_REQUESTED*) cat "$FM_BOSUN_FAKE_GH_DIR/changes_count" ;;
+          *body*) cat "$FM_BOSUN_FAKE_GH_DIR/review_bodies" ;;
           *) cat "$FM_BOSUN_FAKE_GH_DIR/review_ts" ;;
+        esac ;;
+      *issues*comments)
+        case "$4" in
+          *body*) cat "$FM_BOSUN_FAKE_GH_DIR/issue_comment_bodies" ;;
+          *) cat "$FM_BOSUN_FAKE_GH_DIR/issue_comment_ts" ;;
+        esac ;;
+      *pulls*comments)
+        case "$4" in
+          *body*) cat "$FM_BOSUN_FAKE_GH_DIR/pull_comment_bodies" ;;
+          *) cat "$FM_BOSUN_FAKE_GH_DIR/comment_ts" ;;
         esac ;;
       */comments)
         cat "$FM_BOSUN_FAKE_GH_DIR/comment_ts" ;;
@@ -84,6 +100,10 @@ FAKEGH
   printf '\n' >"$home/gh-fixtures/comment_ts"
   printf '%s\n' "$changes_count" >"$home/gh-fixtures/changes_count"
   printf '%s\n' "$pr_state" >"$home/gh-fixtures/pr_state"
+  : >"$home/gh-fixtures/review_bodies"
+  : >"$home/gh-fixtures/pull_comment_bodies"
+  printf '%s\n' "$issue_bodies" >"$home/gh-fixtures/issue_comment_bodies"
+  printf '%s\n' "$issue_ts" >"$home/gh-fixtures/issue_comment_ts"
 }
 
 # old_mtime <file>: set a file's mtime to one hour ago.
@@ -402,6 +422,84 @@ test_pr_readiness_no_reviews_yet() {
   pass "PR readiness: no reviews yet is detected"
 }
 
+# --- Tests: reviewer classification from issue comments --------------------
+#
+# The famclaw reviewer posts findings as issue comments and does NOT create
+# a formal pull-request review when a PR passes. So an empty
+# /pulls/<n>/reviews array does NOT mean unreviewed.
+
+# Fixture: 7 issue comments, each containing "Suggestion importance".
+# No reviews, no pulls comments.
+findings_issue_bodies() {
+  printf 'Suggestion importance: finding %d\n' 1 2 3 4 5 6 7
+}
+
+# Fixture: one issue comment that is a clean pass.
+# No reviews, no pulls comments.
+clean_issue_body() {
+  printf 'No major issues detected. No code suggestions found.\n'
+}
+
+test_pr_readiness_findings_in_issue_comments() {
+  local home id log issue_bodies
+  home=$(make_home pr-findings-issues)
+  id=test-pr-findings-issues
+
+  # 7 findings posted as issue comments; no formal reviews, no pulls
+  # comments. This is the famclaw pattern proven by PR 334.
+  issue_bodies=$(findings_issue_bodies)
+
+  write_fake_gh "$home" \
+    "abc123def456" \
+    "2026-08-03T14:00:00Z" \
+    "" \
+    "0" \
+    "OPEN" \
+    "$issue_bodies" \
+    "2026-08-03T13:00:00Z"
+
+  fm_write_meta "$home/state/$id.meta" \
+    "project=$home" \
+    "harness=echo" \
+    "pr=https://github.com/testowner/testrepo/pull/1"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_grep "reviewer-classification=findings=7" "$log" \
+    "findings from issue comments must be counted"
+  assert_grep "total=7" "$log" "total comment count must include issue comments"
+  pass "PR readiness: findings seen only in issue comments classified correctly"
+}
+
+test_pr_readiness_clean_pass_in_issue_comments() {
+  local home id log
+  home=$(make_home pr-clean-issues)
+  id=test-pr-clean-issues
+
+  # Clean pass: one issue comment with both clean markers. No formal review.
+  write_fake_gh "$home" \
+    "abc123def456" \
+    "2026-08-03T14:00:00Z" \
+    "" \
+    "0" \
+    "OPEN" \
+    "$(clean_issue_body)" \
+    "2026-08-03T13:00:00Z"
+
+  fm_write_meta "$home/state/$id.meta" \
+    "project=$home" \
+    "harness=echo" \
+    "pr=https://github.com/testowner/testrepo/pull/1"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_grep "reviewer-classification=clean" "$log" \
+    "clean pass with no formal review must be classified as clean"
+  pass "PR readiness: clean pass in issue comments classified as clean"
+}
+
 # --- Tests: stalled run-step (fake no-mistakes) -------------------------
 
 # Fixture: axi status with a running ci step, quiet 3h58m, agent pid present.
@@ -679,4 +777,6 @@ test_unpushed_commits_no_remote
 test_unpushed_commits_pushed_to_remote
 test_pr_readiness_review_predates_head
 test_pr_readiness_review_newer_than_head
+test_pr_readiness_findings_in_issue_comments
+test_pr_readiness_clean_pass_in_issue_comments
 test_pr_readiness_no_reviews_yet
