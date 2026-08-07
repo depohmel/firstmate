@@ -977,7 +977,7 @@ test_projection_create_never_closes_a_concurrent_same_label_tab() {
 }
 
 test_projection_create_lock_distinction_unresolved_proceeds_locked_contended_refuses() {
-  local dir out status attempts serialized_called
+  local dir out status attempts
   dir="$TMP_ROOT/create-lock-distinction"; mkdir -p "$dir"
   for mode in unresolved contended; do
     : > "$dir/attempts"

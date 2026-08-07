@@ -1972,6 +1972,13 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
     status=$?
     fm_lock_release "$lock_path" || true
     return "$status"
+  elif [ "$lock_resolved" = 1 ] \
+       && { [ "${FM_LOCK_HELD_PID:-}" = "$$" ] || [ "${FM_LOCK_HELD_PID:-}" = "${BASHPID:-$$}" ]; }; then
+    # Lock resolved but held by the current process (e.g., the spawn caller
+    # already acquired it via spawn_herdr_presentation_order_lock_acquire):
+    # proceed without re-acquiring or releasing, since the caller owns the lock.
+    fm_backend_herdr_projection_create_task_serialized "$@"
+    return $?
   elif [ "$lock_resolved" = 1 ]; then
     echo "warning: herdr presentation task create could not acquire its session presentation lock; refusing an unlocked projection" >&2
     return 1
