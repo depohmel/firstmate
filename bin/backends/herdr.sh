@@ -1939,13 +1939,25 @@ fm_backend_herdr_projection_create_task_serialized() {  # <cwd> <workspace-label
 # Mirrors fm_backend_herdr_kill's lock shape rather than wrapping the body inline,
 # because the serialized function has many early return paths.
 fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-label>
-  local session lock_path attempt=0 lock_held=0 status
+  local session lock_path attempt=0 lock_held=0 status lock_resolved=0
   session=$(fm_backend_herdr_session)
   if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
     # shellcheck source=bin/fm-wake-lib.sh
     . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
   fi
-  if lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session"); then
+  # Lock infrastructure is only considered available when the lock function is
+  # defined after sourcing AND the session lock path resolves to a non-empty
+  # value. When the infrastructure is unavailable (the lock cannot be resolved
+  # at all - e.g. fm_lock_try_acquire undefined after sourcing, the lock path
+  # function fails or returns empty, or the session cannot be resolved) the
+  # pre-existing behaviour is to proceed unlocked by delegating directly to the
+  # serialized body, rather than refusing a normal projection. Only a lock that
+  # resolves but stays held by a concurrent operation after the retry loop is
+  # exhausted justifies a refusal.
+  if declare -F fm_lock_try_acquire >/dev/null 2>&1 \
+     && lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") \
+     && [ -n "$lock_path" ]; then
+    lock_resolved=1
     while [ "$attempt" -lt 50 ]; do
       if fm_lock_try_acquire "$lock_path"; then
         lock_held=1
@@ -1960,9 +1972,15 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
     status=$?
     fm_lock_release "$lock_path" || true
     return "$status"
-  else
+  elif [ "$lock_resolved" = 1 ]; then
     echo "warning: herdr presentation task create could not acquire its session presentation lock; refusing an unlocked projection" >&2
     return 1
+  else
+    # Lock infrastructure unavailable: proceed unlocked, preserving the
+    # pre-existing behaviour where a session presentation lock cannot be
+    # resolved at all.
+    fm_backend_herdr_projection_create_task_serialized "$@"
+    return $?
   fi
 }
 
