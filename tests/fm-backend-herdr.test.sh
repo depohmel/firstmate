@@ -919,6 +919,10 @@ test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane() {
       . "$0/bin/backends/herdr.sh"
       fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }
       fm_backend_herdr_projection_focus_restore() { return 0; }
+      # The presentation session lock cannot be resolved in this fake-herdr
+      # environment (no real socket): the wrapper must proceed unlocked
+      # rather than refuse the projection.
+      fm_backend_herdr_presentation_session_lock_path() { return 1; }
       token=$(fm_backend_herdr_projection_journal_create "$1" task-p2) || exit 1
       label=$(fm_backend_herdr_projection_workspace_label task-p2 "$token")
       fm_backend_herdr_projection_create_task /tmp/proj "$label" fm-task-p2 || exit 1
@@ -960,7 +964,7 @@ test_projection_create_never_closes_a_concurrent_same_label_tab() {
   printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"},{"pane_id":"w9:p3","tab_id":"w9:t3"}]}}\n' > "$resp/11.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }; fm_backend_herdr_projection_focus_restore() { return 0; }; fm_backend_herdr_projection_create_task /tmp/proj label fm-task-p2' "$ROOT" 2>&1)
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }; fm_backend_herdr_projection_focus_restore() { return 0; }; fm_backend_herdr_presentation_session_lock_path() { return 1; }; fm_backend_herdr_projection_create_task /tmp/proj label fm-task-p2' "$ROOT" 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "a concurrent tab should prevent exact one-pane projection convergence"
   assert_contains "$out" "did not converge to exactly one task pane" \
@@ -970,6 +974,47 @@ test_projection_create_never_closes_a_concurrent_same_label_tab() {
   assert_not_contains "$(cat "$log")" $'pane\x1fclose\x1fw9:p3' \
     "projection closed a concurrent same-label pane"
   pass "herdr presentation create: concurrent same-label tabs are never prune targets"
+}
+
+test_projection_create_lock_distinction_unresolved_proceeds_locked_contended_refuses() {
+  local dir out status attempts serialized_called
+  dir="$TMP_ROOT/create-lock-distinction"; mkdir -p "$dir"
+  for mode in unresolved contended; do
+    : > "$dir/attempts"
+    : > "$dir/serialized-called"
+    out=$(ROOT="$ROOT" MODE="$mode" ATTEMPTS="$dir/attempts" SERIALIZED_CALLED="$dir/serialized-called" bash -c '
+      . "$ROOT/bin/backends/herdr.sh"
+      fm_backend_herdr_presentation_session_lock_path() {
+        [ "$MODE" = contended ] || return 1
+        printf "/tmp/fm-herdr-contended-create-test-lock"
+      }
+      fm_lock_try_acquire() {
+        printf "x\n" >> "$ATTEMPTS"
+        return 1
+      }
+      fm_lock_release() { :; }
+      sleep() { :; }
+      fm_backend_herdr_projection_create_task_serialized() {
+        printf "serialized\n" >> "$SERIALIZED_CALLED"
+        return 0
+      }
+      fm_backend_herdr_projection_create_task /tmp/proj label fm-task-p2
+    ' 2>&1)
+    status=$?
+    if [ "$mode" = contended ]; then
+      [ "$status" -eq 1 ] || fail "contended presentation lock should refuse create: status=$status"
+      assert_contains "$out" "refusing an unlocked projection"         "contended presentation lock did not refuse the projection"
+      [ -s "$dir/serialized-called" ] && fail "contended projection create called the serialized body"
+      attempts=$(wc -l < "$dir/attempts" | tr -d ' ')
+      [ "$attempts" = 50 ] || fail "contended presentation lock did not use the bounded wait: $attempts attempts"
+    else
+      [ "$status" -eq 0 ] || fail "unresolved presentation lock should proceed unlocked: status=$status"
+      [ -s "$dir/serialized-called" ] || fail "unresolved presentation lock did not proceed to the serialized body"
+      attempts=$(wc -l < "$dir/attempts" | tr -d ' ')
+      [ "$attempts" = 0 ] || fail "unresolved presentation lock path attempted acquisition: $attempts"
+    fi
+  done
+  pass "fm_backend_herdr_projection_create_task: unresolved locks proceed unlocked, contended locks refuse"
 }
 
 test_projection_focus_snapshot_requires_exact_workspace_and_tab() {
@@ -3902,6 +3947,7 @@ test_projection_journal_is_atomic_and_uses_128_bit_token
 test_projection_journal_v2_binds_and_advances_exact_endpoint
 test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane
 test_projection_create_never_closes_a_concurrent_same_label_tab
+test_projection_create_lock_distinction_unresolved_proceeds_locked_contended_refuses
 test_projection_focus_snapshot_requires_exact_workspace_and_tab
 test_projection_close_restores_exact_prior_focus
 test_projection_close_refuses_active_tab
