@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+[ "${FM_SPAWN_DEBUG:-0}" = 1 ] && { PS4=':[${BASH_SOURCE##*/}:${LINENO}] '; set -x; }
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
 # Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
