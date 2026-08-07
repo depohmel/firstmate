@@ -149,7 +149,8 @@ check_pr_readiness() {  # <id> <meta>
   review_ts=""
   for endpoint in \
     "repos/$owner_repo/pulls/$number/reviews" \
-    "repos/$owner_repo/pulls/$number/comments"
+    "repos/$owner_repo/pulls/$number/comments" \
+    "repos/$owner_repo/issues/$number/comments"
   do
     ts=$(gh api "$endpoint" --jq '[.[] | (.submitted_at // .created_at // empty)] | max // ""' 2>/dev/null) || ts=""
     if [ -n "$ts" ] && { [ -z "$review_ts" ] || [[ "$ts" > "$review_ts" ]]; }; then
@@ -174,6 +175,57 @@ check_pr_readiness() {  # <id> <meta>
 
   # Persistent status trail: report the pair explicitly, never a bare "green"
   bosun_log "pr-readiness:$id:verdict=$verdict review_ts=${review_ts:-none} head_ts=$head_ts changes_requested=$changes_requested"
+
+  # --- Classification of reviewer comment bodies ---
+  # This reviewer (famclaw) posts findings as comments on the GitHub issues
+  # endpoint and posts NO formal pull-request review when a PR passes.
+  # An empty /pulls/<n>/reviews array does NOT mean unreviewed. Collect
+  # bodies from all three endpoints and classify into one of:
+  #   clean                     non-pointer bodies contain both "No major
+  #                             issues detected" and "No code suggestions
+  #                             found"
+  #   unreviewed                no reviewer comments at all
+  #   findings=N                N = count of "Suggestion importance" in
+  #                             non-pointer comments
+  #   reviewed, verdict unknown only "Persistent review updated" pointer
+  #                             comments, no substantive bodies
+  # "Pointer" comments contain "Persistent review updated"; they are excluded
+  # from the findings count. Clean is checked before findings because a
+  # passing PR may have zero "Suggestion importance" occurrences.
+  local total_comments=0 has_nonpointer=0 findings classifier
+  local nonpointer_text="" endpoint_bodies body
+  for endpoint in \
+    "repos/$owner_repo/pulls/$number/reviews" \
+    "repos/$owner_repo/pulls/$number/comments" \
+    "repos/$owner_repo/issues/$number/comments"
+  do
+    endpoint_bodies=$(gh api "$endpoint" --jq '[.[] | .body // ""] | .[]' 2>/dev/null) || endpoint_bodies=""
+    if [ -n "$endpoint_bodies" ]; then
+      while IFS= read -r body; do
+        [ -z "$body" ] && continue
+        total_comments=$((total_comments + 1))
+        if [[ "$body" != *"Persistent review updated"* ]]; then
+          has_nonpointer=1
+          nonpointer_text="${nonpointer_text}${body}"$'\n'
+        fi
+      done <<< "$endpoint_bodies"
+    fi
+  done
+
+  findings=$(printf '%s' "$nonpointer_text" | grep -o 'Suggestion importance' 2>/dev/null | wc -l | tr -d '[:space:]')
+  case "$findings" in ''|*[!0-9]*) findings=0 ;; esac
+
+  if [ "$total_comments" -eq 0 ]; then
+    classifier="unreviewed"
+  elif [ "$has_nonpointer" -eq 0 ]; then
+    classifier="reviewed, verdict unknown"
+  elif [[ "$nonpointer_text" == *"No major issues detected"* && "$nonpointer_text" == *"No code suggestions found"* ]]; then
+    classifier="clean"
+  else
+    classifier="findings=$findings"
+  fi
+
+  bosun_log "pr-readiness:$id:reviewer-classification=$classifier total=$total_comments findings=$findings"
 
   # Steer only when review predates head (rate-capped)
   if [ "$verdict" = "NOT-reviewed-against-current-head" ]; then
