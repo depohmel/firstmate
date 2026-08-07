@@ -1823,7 +1823,7 @@ EOF
 # CLEANUP_SAFE becomes 1 only after both creates returned complete exact IDs.
 # A missing, failed, or malformed create response stays ambiguous and grants no
 # cleanup authority.
-fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-label>
+fm_backend_herdr_projection_create_task_serialized() {  # <cwd> <workspace-label> <task-label>
   local cwd=$1 workspace_label=$2 task_label=$3 session out tabs panes tab_count pane_count focus_before
   FM_BACKEND_HERDR_PROJECTION_SESSION=""
   FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID=""
@@ -1931,6 +1931,39 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
     return 1
   fi
   return 0
+}
+
+# fm_backend_herdr_projection_create_task: acquire the presentation session
+# lock before delegating to the serialized body, so a post-create abort cleanup
+# (fm_backend_herdr_kill) cannot interleave with a concurrent projection create.
+# Mirrors fm_backend_herdr_kill's lock shape rather than wrapping the body inline,
+# because the serialized function has many early return paths.
+fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-label>
+  local session lock_path attempt=0 lock_held=0 status
+  session=$(fm_backend_herdr_session)
+  if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
+  fi
+  if lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session"); then
+    while [ "$attempt" -lt 50 ]; do
+      if fm_lock_try_acquire "$lock_path"; then
+        lock_held=1
+        break
+      fi
+      sleep 0.1
+      attempt=$((attempt + 1))
+    done
+  fi
+  if [ "$lock_held" = 1 ]; then
+    fm_backend_herdr_projection_create_task_serialized "$@"
+    status=$?
+    fm_lock_release "$lock_path" || true
+    return "$status"
+  else
+    echo "warning: herdr presentation task create could not acquire its session presentation lock; refusing an unlocked projection" >&2
+    return 1
+  fi
 }
 
 # fm_backend_herdr_projection_cleanup_exact: same-process abort cleanup for a
