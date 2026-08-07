@@ -55,7 +55,9 @@ add_commit_to() {
 # via a fresh clone of the upstream bare repo (so the work clone stays clean).
 add_upstream_commit() {
     local tmp=$1 msg=$2 file=$3 content=$4 w
-    w=$(mktemp -d "$tmp/upstream-work.XXXXXX")
+    w="$tmp/upstream-work"
+    rm -rf "$w"
+    mkdir -p "$w"
     git clone -q "$tmp/upstream.git" "$w"
     printf '%s\n' "$content" > "$w/$file"
     git -C "$w" add "$file"
@@ -81,6 +83,15 @@ SH
     chmod +x "$dir/gh-axi"
 }
 
+# make_test_dir <name>: create a fresh subdirectory under TMP_ROOT. Echoes the path.
+make_test_dir() {
+    local name=$1
+    local dir="$TMP_ROOT/$name"
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    printf '%s\n' "$dir"
+}
+
 # run_sync <work> <fakebin> [args...]: run the script from <work> with <fakebin>
 # on PATH, capturing combined stdout+stderr.
 run_sync() {
@@ -100,13 +111,14 @@ count_remote_sync_branches() {
 
 test_no_new_commits_exits_silently() {
     local tmp work state fakebin out rc upstream_sha
-    tmp=$(mktemp -d "$TMP_ROOT/no-new.XXXXXX")
+    tmp=$(make_test_dir no-new)
     work=$(setup_fork "$tmp")
     state="$work/state"
     mkdir -p "$state"
     fakebin=$(fm_fakebin "$tmp")
 
     # Record the current upstream HEAD to simulate a prior sync.
+    git -C "$work" fetch upstream >/dev/null 2>&1
     upstream_sha=$(git -C "$work" rev-parse upstream/main)
     printf '%s\n' "$upstream_sha" > "$state/upstream-sync-last-sha"
 
@@ -122,7 +134,7 @@ test_no_new_commits_exits_silently() {
 
 test_clean_merge_creates_branch_and_pr() {
     local tmp work state fakebin out rc before_sha upstream_sha
-    tmp=$(mktemp -d "$TMP_ROOT/clean.XXXXXX")
+    tmp=$(make_test_dir clean)
     work=$(setup_fork "$tmp")
     state="$work/state"
     mkdir -p "$state"
@@ -167,7 +179,7 @@ test_clean_merge_creates_branch_and_pr() {
 
 test_conflicting_merge_aborts() {
     local tmp work state fakebin out rc before_sha
-    tmp=$(mktemp -d "$TMP_ROOT/conflict.XXXXXX")
+    tmp=$(make_test_dir conflict)
     work=$(setup_fork "$tmp")
     state="$work/state"
     mkdir -p "$state"
@@ -214,7 +226,7 @@ test_conflicting_merge_aborts() {
 
 test_idempotence_skip() {
     local tmp work state fakebin1 fakebin2 out1 rc1 out2 rc2
-    tmp=$(mktemp -d "$TMP_ROOT/idem.XXXXXX")
+    tmp=$(make_test_dir idem)
     work=$(setup_fork "$tmp")
     state="$work/state"
     mkdir -p "$state"
@@ -232,6 +244,7 @@ test_idempotence_skip() {
     rc1=$?
     set -e
     expect_code 0 "$rc1" "idempotence: first run must exit 0"
+    assert_contains "$out1" "Created PR" "idempotence: first run must report PR creation"
     assert_grep "pr create" "$tmp/gh-axi.log" "idempotence: first run must call gh-axi"
 
     [ "$(count_remote_sync_branches "$work")" = "1" ] \

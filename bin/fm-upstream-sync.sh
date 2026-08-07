@@ -49,7 +49,7 @@ Recommended cron (daily, run from the firstmate repo root):
 fi
 [ $# -eq 0 ] || { usage; exit 1; }
 
-"$FM_ROOT/bin/fm-guard.sh" || true
+"$SCRIPT_DIR/fm-guard.sh" || true
 
 # --- preflight -------------------------------------------------------------
 
