@@ -100,6 +100,24 @@ SH
   done
 }
 
+# fm_fake_treehouse_lease <fakebin>: drop a treehouse stub that answers
+# `get --lease` with $FM_FAKE_PANE_PATH on stdout and exits 0 silently for every
+# other invocation. This mirrors the real contract fm-spawn.sh depends on -
+# stdout carries only the leased worktree path, banners go to stderr - so a
+# crew/scout spawn resolves the worktree the test controls. Secondmate spawns
+# never lease, so the same stub serves both shapes.
+fm_fake_treehouse_lease() {
+  local fakebin=$1
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  if [ "$arg" = "--lease" ]; then printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0; fi
+done
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
+}
+
 # --- deterministic git identity and fixtures --------------------------------
 
 # fm_git_identity [name] [email]: export a fixed author/committer identity so
