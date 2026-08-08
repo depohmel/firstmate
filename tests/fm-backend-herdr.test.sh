@@ -51,6 +51,21 @@ if [ "${1:-}" = status ] && [ "${2:-}" = --json ] && [ "${FM_HERDR_SCRIPT_STATUS
   printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n'
   exit 0
 fi
+if [ "${1:-}" = session ] && [ "${2:-}" = list ]; then
+  sn_mh_n=$next
+  if [ -f "$RESP/$sn_mh_n.out" ] && grep -q '"sessions"' "$RESP/$sn_mh_n.out" 2>/dev/null; then
+    cat "$RESP/$sn_mh_n.out"
+    echo "$sn_mh_n" > "$COUNT_FILE"
+    exit 0
+  fi
+  sn="fmtest"; prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "--session" ]; then sn="$arg"; break; fi
+    prev=$arg
+  done
+  printf '{"sessions":[{"name":"%s","running":true,"socket_path":"/tmp/%s.sock"}]}\n' "$sn" "$sn"
+  exit 0
+fi
 n=$next
 echo "$n" > "$COUNT_FILE"
 if [ -f "$RESP/$n.exit" ]; then
@@ -2108,7 +2123,7 @@ SH
   [ "$status" -eq 0 ] || fail "ambiguous projection ordering must not fail the spawn"
   assert_contains "$out" "ambiguous workspace layout" "ambiguous projection layout did not warn"
   [ ! -e "$dir/called" ] || fail "ambiguous projection layout attempted workspace.move"
-  [ "$(wc -l < "$log" | tr -d '[:space:]')" = 1 ] \
+  [ "$(wc -l < "$log" | tr -d '[:space:]')" = 2 ] \
     || fail "ambiguous projection ordering did more than one read-only workspace list"
   pass "herdr presentation ordering: an ambiguous existing worker block is warning-only and read-only"
 }
@@ -2180,7 +2195,7 @@ SH
   [ "$status" -eq 0 ] || fail "foreign new-child ordering must not fail the spawn"
   assert_contains "$out" "ambiguous workspace layout" "foreign new child before its parent did not warn"
   [ ! -e "$dir/called" ] || fail "foreign new child before its parent attempted workspace.move"
-  [ "$(wc -l < "$log" | tr -d '[:space:]')" = 1 ] \
+  [ "$(wc -l < "$log" | tr -d '[:space:]')" = 2 ] \
     || fail "foreign new-child ordering did more than one read-only workspace list"
   pass "herdr presentation ordering: a foreign new-format child is warning-only and read-only"
 }
