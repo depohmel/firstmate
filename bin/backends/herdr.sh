@@ -1020,16 +1020,35 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
 # shape rather than wrapping the body inline, because the serialized function
 # has many early return paths.
 #
-# When the lock cannot be resolved (helper missing, path empty, no session),
-# proceed rather than refuse: a normal projection cannot proceed at all in
-# that case. Only a lock that resolves but stays held by a different process
-# after the retry loop justifies a refusal; the worker then stays in Herdr's
-# current order.
+# One-lock-discipline rule: when the spawn caller already holds the session
+# presentation lock (via spawn_herdr_presentation_order_lock_acquire), the
+# lock is detected by FM_LOCK_HELD_PID *before* calling fm_lock_try_acquire.
+# This single check is the only gate — the lock acquisition machinery is
+# never re-entered while the current process holds the lock, because a
+# re-entrant fm_lock_try_acquire call side-effects a throwaway owner
+# directory through mktemp-d and re-enters the ownership handshake that
+# spawn_abort_cleanup's fm_lock_release later depends on. Proceeding
+# unlocked when the lock path cannot be resolved preserves the pre-existing
+# behaviour where a presentation lock is unavailable at all. Only a lock that
+# resolves but stays held by a different process after the retry loop is
+# exhausted justifies a refusal; the worker then stays in Herdr's current
+# order.
 fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspace-id> <parent-label> [<parent-workspace-id>]
   local session=$1 lock_path attempt=0 lock_held=0 lock_resolved=0 lock_owned_by_us=0
   if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
     # shellcheck source=bin/fm-wake-lib.sh
     . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
+  fi
+  # Fast path: the spawn caller (or a parent lock holder in this same
+  # process) already acquired the session presentation lock. FM_LOCK_HELD_PID
+  # is set by fm_lock_try_acquire when it detects a held lock; it is only
+  # reliable as a same-process signal when the pid matches the current
+  # process. Checking it here avoids re-entering fm_lock_try_acquire, which
+  # would side-effect a throwaway owner directory and re-run the ownership
+  # handshake that fm_lock_release (in spawn_abort_cleanup) later depends on.
+  if [ "${FM_LOCK_HELD_PID:-}" = "$$" ] || [ "${FM_LOCK_HELD_PID:-}" = "${BASHPID:-$$}" ]; then
+    fm_backend_herdr_projection_order_best_effort_serialized "$@"
+    return 0
   fi
   if declare -F fm_lock_try_acquire >/dev/null 2>&1 \
      && lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") \
