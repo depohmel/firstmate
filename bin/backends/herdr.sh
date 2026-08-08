@@ -1011,6 +1011,67 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
   printf '%s\n' "$shell_pid"
 }
 
+
+# fm_backend_herdr_projection_order_best_effort: acquire the presentation
+# session lock before delegating to the serialized body, so two concurrent
+# primary workers cannot read a shared workspace list and interleave their
+# move-append into the same contiguous block slot. Mirrors
+# fm_backend_herdr_projection_create_task and fm_backend_herdr_kill's lock
+# shape rather than wrapping the body inline, because the serialized function
+# has many early return paths.
+#
+# When the lock cannot be resolved (helper missing, path empty, no session),
+# proceed rather than refuse: a normal projection cannot proceed at all in
+# that case. Only a lock that resolves but stays held by a different process
+# after the retry loop justifies a refusal; the worker then stays in Herdr's
+# current order.
+fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspace-id> <parent-label> [<parent-workspace-id>]
+  local session=$1 lock_path attempt=0 lock_held=0 lock_resolved=0 lock_owned_by_us=0
+  if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
+  fi
+  if declare -F fm_lock_try_acquire >/dev/null 2>&1 \
+     && lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") \
+     && [ -n "$lock_path" ]; then
+    lock_resolved=1
+    while [ "$attempt" -lt 50 ]; do
+      if fm_lock_try_acquire "$lock_path"; then
+        lock_held=1
+        lock_owned_by_us=1
+        break
+      fi
+      # Break early when the lock is already held by the current process
+      # (e.g. the spawn caller acquired it via
+      # spawn_herdr_presentation_order_lock_acquire). Without this the retry
+      # loop wastes up to 5 seconds sleeping, which causes concurrent workers
+      # to time out in spawn_herdr_presentation_order_lock_acquire.
+      if [ "${FM_LOCK_HELD_PID:-}" = "$$" ] || [ "${FM_LOCK_HELD_PID:-}" = "${BASHPID:-$$}" ]; then
+        lock_held=1
+        break
+      fi
+      sleep 0.1
+      attempt=$((attempt + 1))
+    done
+  fi
+  if [ "$lock_held" = 1 ]; then
+    fm_backend_herdr_projection_order_best_effort_serialized "$@"
+    if [ "$lock_owned_by_us" = 1 ]; then
+      fm_lock_release "$lock_path" || true
+    fi
+    return 0
+  elif [ "$lock_resolved" = 1 ]; then
+    echo "warning: herdr presentation ordering could not acquire its session presentation lock; leaving worker in Herdr's current order" >&2
+    return 0
+  else
+    # Lock infrastructure unavailable: proceed unlocked, preserving the
+    # pre-existing behaviour where a session presentation lock cannot be
+    # resolved at all.
+    fm_backend_herdr_projection_order_best_effort_serialized "$@"
+    return 0
+  fi
+}
+
 # fm_backend_herdr_projection_order_best_effort: place the exact workspace id
 # returned by THIS projected create immediately after its owning parent's
 # contiguous child block and before the next parent.
@@ -1036,7 +1097,11 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
 # current workspace-create response.
 # After a successful move, every pre-existing workspace id sequence excluding
 # the new id must be byte-identical to the pre-move sequence.
-fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspace-id> <parent-label> [<parent-workspace-id>]
+#
+# This is the serialized body; the wrapper
+# fm_backend_herdr_projection_order_best_effort acquires the presentation
+# session lock before delegating here.
+fm_backend_herdr_projection_order_best_effort_serialized() {  # <session> <created-workspace-id> <parent-label> [<parent-workspace-id>]
   local session=$1 created=$2 parent=$3 parent_ws=${4:-} list analysis current desired socket mover response move_status focus_before move_capable
   local before_existing after_existing
   [ -n "$parent" ] || {
@@ -1961,6 +2026,14 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
     while [ "$attempt" -lt 50 ]; do
       if fm_lock_try_acquire "$lock_path"; then
         lock_held=1
+        break
+      fi
+      # Break early when the lock is already held by the current process
+      # (e.g. the spawn caller acquired it via spawn_herdr_presentation_order_lock_acquire).
+      # Without this, the retry loop wastes up to 5 seconds sleeping on every
+      # iteration, which causes concurrent workers to time out in
+      # spawn_herdr_presentation_order_lock_acquire and fall back to flat layout.
+      if [ "${FM_LOCK_HELD_PID:-}" = "$$" ] || [ "${FM_LOCK_HELD_PID:-}" = "${BASHPID:-$$}" ]; then
         break
       fi
       sleep 0.1
