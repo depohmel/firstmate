@@ -411,6 +411,84 @@ check_stale_teardown() {  # <id> <meta>
   fi
 }
 
+# --- Check: inflight sibling PRs after a merge ---------------------------
+#
+# When a task's PR is merged, every other open PR in that repo was validated
+# against the old base and may now be CONFLICTING or behind the base, silently
+# stalling its pipeline (famclaw #334/338 → #341; image-understanding #206,
+# #202). This check lists the repo's open PRs and surfaces the ones that need
+# a rebase. It reports only — never rebases, pushes, or otherwise writes to any
+# branch. Firstmate owns the rebase decision.
+check_inflight_conflicts() {  # <id> <meta>
+  local id=$1 meta=$2 pr owner_repo number merged open_prs
+  local sibling_num mergeable behind conflicts=""
+
+  pr=$(fm_meta_get "$meta" pr) || true
+  [ -n "$pr" ] || return 0
+
+  case "$pr" in
+    https://github.com/*) : ;;
+    *) bosun_log "conflicting-siblings:$id:skip:non-github-url"; return 0 ;;
+  esac
+
+  command -v gh >/dev/null 2>&1 || { bosun_log "conflicting-siblings:$id:skip:gh-missing"; return 0; }
+
+  owner_repo=$(printf '%s' "$pr" | sed 's|https://github.com/||; s|/pull/[^/]*$||')
+  number=$(printf '%s' "$pr" | sed 's|.*/pull/||')
+
+  # Only check siblings when this task's PR is merged. A non-merged PR means
+  # its siblings are still validated against the current base.
+  merged=$(gh pr view "$pr" --json state -q .state 2>/dev/null) || merged=""
+  case "$merged" in
+    MERGED) ;;
+    *) bosun_log "conflicting-siblings:$id:skip:not-merged state=${merged:-none}"; return 0 ;;
+  esac
+
+  # List open PRs for the repo. The merged PR is excluded by definition.
+  open_prs=$(gh pr list -R "$owner_repo" --state open --json number -q '.[].number' 2>/dev/null) || open_prs=""
+  [ -n "$open_prs" ] || { bosun_log "conflicting-siblings:$id:no-open-siblings"; return 0; }
+
+  # For each open PR, check whether it needs a rebase.
+  #   mergeable  — CONFLICTING means GitHub cannot merge cleanly.
+  #   behindBase — true means the PR branch is behind the base branch.
+  # Either condition means a rebase is needed.
+  while IFS= read -r sibling_num; do
+    [ -n "$sibling_num" ] || continue
+    [ "$sibling_num" = "$number" ] && continue
+
+    mergeable=$(gh pr view "https://github.com/$owner_repo/pull/$sibling_num" \
+      --json mergeable -q .mergeable 2>/dev/null) || mergeable="UNKNOWN"
+    behind=$(gh pr view "https://github.com/$owner_repo/pull/$sibling_num" \
+      --json behindBase -q .behindBase 2>/dev/null) || behind="false"
+
+    case "$mergeable" in
+      CONFLICTING)
+        conflicts="${conflicts} PR#${sibling_num}(CONFLICTING"
+        [ "$behind" = "true" ] && conflicts="${conflicts},behind=true"
+        conflicts="${conflicts})"
+        ;;
+      MERGEABLE)
+        [ "$behind" = "true" ] && conflicts="${conflicts} PR#${sibling_num}(behind=true)"
+        ;;
+      *)
+        conflicts="${conflicts} PR#${sibling_num}(mergeable=${mergeable})"
+        ;;
+    esac
+  done <<< "$open_prs"
+
+  if [ -n "$conflicts" ]; then
+    if [ "$FM_BOSUN_DRY_RUN" = 1 ]; then
+      bosun_log "conflicting-siblings:$id:WOULD-escalate:$conflicts"
+    else
+      fm_wake_append "stale" "$id.status" \
+        "BOSUN-ESCALATION: merged PR <$pr> has in-flight siblings needing rebase:${conflicts}" 2>/dev/null || true
+      bosun_log "conflicting-siblings:$id:escalated:$conflicts"
+    fi
+  else
+    bosun_log "conflicting-siblings:$id:no-conflicts"
+  fi
+}
+
 # --- no-mistakes axi status helpers ---------------------------------------
 
 NM_AXI_CACHE_ID=""
@@ -651,6 +729,7 @@ main() {
     check_unpushed_commits "$id" "$meta"
     check_parked_work "$id"
     check_stale_teardown "$id" "$meta"
+    check_inflight_conflicts "$id" "$meta"
     check_stalled_runstep "$id" "$meta"
     check_no_progress_crew "$id" "$meta"
   done

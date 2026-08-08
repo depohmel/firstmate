@@ -63,9 +63,19 @@ write_fake_gh() {
 # extraction on the same endpoint.
 case "$1" in
   pr)
-    case "$5" in
-      headRefOid) cat "$FM_BOSUN_FAKE_GH_DIR/head_oid" ;;
-      state) cat "$FM_BOSUN_FAKE_GH_DIR/pr_state" ;;
+    case "$2" in
+      list)
+        cat "$FM_BOSUN_FAKE_GH_DIR/open_prs"
+        ;;
+      view)
+        _snum="${3##*/pull/}"
+        case "$5" in
+          headRefOid) cat "$FM_BOSUN_FAKE_GH_DIR/head_oid" ;;
+          state) cat "$FM_BOSUN_FAKE_GH_DIR/pr_state" ;;
+          mergeable) cat "$FM_BOSUN_FAKE_GH_DIR/sibling_mergeable_${_snum}" 2>/dev/null || printf 'MERGEABLE\n' ;;
+          behindBase) cat "$FM_BOSUN_FAKE_GH_DIR/sibling_behind_${_snum}" 2>/dev/null || printf 'false\n' ;;
+        esac
+        ;;
     esac
     ;;
   api)
@@ -104,6 +114,7 @@ FAKEGH
   : >"$home/gh-fixtures/pull_comment_bodies"
   printf '%s\n' "$issue_bodies" >"$home/gh-fixtures/issue_comment_bodies"
   printf '%s\n' "$issue_ts" >"$home/gh-fixtures/issue_comment_ts"
+  : >"$home/gh-fixtures/open_prs"
 }
 
 # old_mtime <file>: set a file's mtime to one hour ago.
@@ -758,6 +769,102 @@ test_no_progress_crew_not_flagged_when_idle() {
   pass "no-progress not flagged when crew is idle"
 }
 
+# --- Tests: inflight sibling conflicts after a merge ---------------------
+#
+# When a task's PR is merged, every other open PR in that repo was validated
+# against the old base and may now be CONFLICTING or behind the base, silently
+# stalling its pipeline. The bosun's check_inflight_conflicts surfaces these
+# without ever rebasing. Uses gh pr view --json mergeable (CONFLICTING) and
+# behindBase, plus gh pr list to enumerate open PRs for the repo.
+
+test_conflicting_sibling_reported() {
+  local home id log
+  home=$(make_home conflicting-sibling)
+  id=test-conflicting-sibling
+
+  write_fake_gh "$home" \
+    "abc123def456" \
+    "2026-08-03T15:00:00Z" \
+    "" \
+    "0" \
+    "MERGED"
+
+  printf '341\n' >"$home/gh-fixtures/open_prs"
+  printf 'CONFLICTING\n' >"$home/gh-fixtures/sibling_mergeable_341"
+  printf 'true\n' >"$home/gh-fixtures/sibling_behind_341"
+
+  fm_write_meta "$home/state/$id.meta" \
+    "project=$home" \
+    "harness=echo" \
+    "pr=https://github.com/testowner/testrepo/pull/338"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_grep "conflicting-siblings:$id" "$log" "conflicting-siblings check should run"
+  assert_grep "WOULD-escalate" "$log" "should escalate conflicting sibling in dry-run"
+  assert_grep "341" "$log" "should name the conflicting sibling PR #341"
+  pass "conflicting sibling PR is reported"
+}
+
+test_up_to_date_sibling_not_reported() {
+  local home id log
+  home=$(make_home up-to-date-sibling)
+  id=test-up-to-date-sibling
+
+  write_fake_gh "$home" \
+    "abc123def456" \
+    "2026-08-03T15:00:00Z" \
+    "" \
+    "0" \
+    "MERGED"
+
+  printf '341\n' >"$home/gh-fixtures/open_prs"
+  printf 'MERGEABLE\n' >"$home/gh-fixtures/sibling_mergeable_341"
+  printf 'false\n' >"$home/gh-fixtures/sibling_behind_341"
+
+  fm_write_meta "$home/state/$id.meta" \
+    "project=$home" \
+    "harness=echo" \
+    "pr=https://github.com/testowner/testrepo/pull/338"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_grep "conflicting-siblings:$id" "$log" "conflicting-siblings check should run"
+  assert_grep "no-conflicts" "$log" "should report no conflicts for up-to-date sibling"
+  assert_no_grep "WOULD-escalate" "$log" "should not escalate up-to-date sibling"
+  pass "up-to-date sibling is not reported"
+}
+
+test_no_open_siblings_reports_nothing() {
+  local home id log
+  home=$(make_home no-siblings)
+  id=test-no-siblings
+
+  write_fake_gh "$home" \
+    "abc123def456" \
+    "2026-08-03T15:00:00Z" \
+    "" \
+    "0" \
+    "MERGED"
+
+  : >"$home/gh-fixtures/open_prs"
+
+  fm_write_meta "$home/state/$id.meta" \
+    "project=$home" \
+    "harness=echo" \
+    "pr=https://github.com/testowner/testrepo/pull/338"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_grep "conflicting-siblings:$id" "$log" "conflicting-siblings check should run"
+  assert_grep "no-open-siblings" "$log" "should report no open siblings"
+  assert_no_grep "WOULD-escalate" "$log" "should not escalate with no open siblings"
+  pass "no open siblings reports nothing"
+}
+
 # --- Run all tests ---
 
 test_no_progress_crew_detected
@@ -780,3 +887,6 @@ test_pr_readiness_review_newer_than_head
 test_pr_readiness_findings_in_issue_comments
 test_pr_readiness_clean_pass_in_issue_comments
 test_pr_readiness_no_reviews_yet
+test_conflicting_sibling_reported
+test_up_to_date_sibling_not_reported
+test_no_open_siblings_reports_nothing
