@@ -309,6 +309,8 @@ fm_lock_try_acquire() {
   FM_LOCK_OWNER_DIR=
 
   if fm_lock_try_create "$lockdir"; then
+    # shellcheck disable=SC2034 # Read by callers after fm_lock_try_acquire returns.
+    FM_LOCK_HELD_PID=${BASHPID:-$$}
     return 0
   fi
 
@@ -366,6 +368,8 @@ fm_lock_try_acquire() {
   rc=1
   if fm_lock_try_create "$lockdir" "$steal_owner"; then
     rc=0
+    # shellcheck disable=SC2034 # Read by callers after fm_lock_try_acquire returns.
+    FM_LOCK_HELD_PID=${BASHPID:-$$}
   fi
   if [ "$rc" -ne 0 ]; then
     # shellcheck disable=SC2034 # Read by callers after fm_lock_try_acquire returns.

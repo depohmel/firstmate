@@ -1040,12 +1040,12 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
     . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
   fi
   # Fast path: the spawn caller (or a parent lock holder in this same
-  # process) already acquired the session presentation lock. FM_LOCK_HELD_PID
-  # is set by fm_lock_try_acquire when it detects a held lock; it is only
-  # reliable as a same-process signal when the pid matches the current
-  # process. Checking it here avoids re-entering fm_lock_try_acquire, which
-  # would side-effect a throwaway owner directory and re-run the ownership
-  # handshake that fm_lock_release (in spawn_abort_cleanup) later depends on.
+  # process) already acquired the session presentation lock. With
+  # fm_lock_try_acquire now setting FM_LOCK_HELD_PID to the current pid on
+  # success, this same-process check reliably detects the holder and avoids
+  # re-entering fm_lock_try_acquire, which would side-effect a throwaway
+  # owner directory and re-run the ownership handshake that fm_lock_release
+  # (in spawn_abort_cleanup) later depends on.
   if [ "${FM_LOCK_HELD_PID:-}" = "$$" ] || [ "${FM_LOCK_HELD_PID:-}" = "${BASHPID:-$$}" ]; then
     fm_backend_herdr_projection_order_best_effort_serialized "$@"
     return 0
@@ -2023,7 +2023,7 @@ fm_backend_herdr_projection_create_task_serialized() {  # <cwd> <workspace-label
 # Mirrors fm_backend_herdr_kill's lock shape rather than wrapping the body inline,
 # because the serialized function has many early return paths.
 fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-label>
-  local session lock_path attempt=0 lock_held=0 status lock_resolved=0
+  local session lock_path attempt=0 lock_held=0 status lock_resolved=0 lock_owned_by_us=0
   session=$(fm_backend_herdr_session)
   if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
     # shellcheck source=bin/fm-wake-lib.sh
@@ -2038,6 +2038,20 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
   # serialized body, rather than refusing a normal projection. Only a lock that
   # resolves but stays held by a concurrent operation after the retry loop is
   # exhausted justifies a refusal.
+  #
+  # One-lock-discipline rule: when the spawn caller already holds the session
+  # presentation lock (via spawn_herdr_presentation_order_lock_acquire), this
+  # fast path detects the same-process holder and avoids re-entering the lock
+  # primitive - keeping one continuous lock hold across acquire -> create ->
+  # move -> journal -> validate -> abort-cleanup, closing the create->close gap
+  # that interleaved outside-lock attempts left open. The release below is
+  # gated on lock_owned_by_us, which is set only when fm_lock_try_acquire
+  # returned 0 in this call - never on the break-early "held by me" path - so
+  # the wrapper never releases a lock its own caller owns.
+  if [ "${FM_LOCK_HELD_PID:-}" = "$$" ] || [ "${FM_LOCK_HELD_PID:-}" = "${BASHPID:-$$}" ]; then
+    fm_backend_herdr_projection_create_task_serialized "$@"
+    return $?
+  fi
   if declare -F fm_lock_try_acquire >/dev/null 2>&1 \
      && lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") \
      && [ -n "$lock_path" ]; then
@@ -2045,14 +2059,17 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
     while [ "$attempt" -lt 50 ]; do
       if fm_lock_try_acquire "$lock_path"; then
         lock_held=1
+        lock_owned_by_us=1
         break
       fi
       # Break early when the lock is already held by the current process
-      # (e.g. the spawn caller acquired it via spawn_herdr_presentation_order_lock_acquire).
-      # Without this, the retry loop wastes up to 5 seconds sleeping on every
-      # iteration, which causes concurrent workers to time out in
+      # (e.g. the spawn caller acquired it via
+      # spawn_herdr_presentation_order_lock_acquire). Without this, the retry
+      # loop wastes up to 5 seconds sleeping on every iteration, which causes
+      # concurrent workers to time out in
       # spawn_herdr_presentation_order_lock_acquire and fall back to flat layout.
       if [ "${FM_LOCK_HELD_PID:-}" = "$$" ] || [ "${FM_LOCK_HELD_PID:-}" = "${BASHPID:-$$}" ]; then
+        lock_held=1
         break
       fi
       sleep 0.1
@@ -2062,15 +2079,10 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
   if [ "$lock_held" = 1 ]; then
     fm_backend_herdr_projection_create_task_serialized "$@"
     status=$?
-    fm_lock_release "$lock_path" || true
+    if [ "$lock_owned_by_us" = 1 ]; then
+      fm_lock_release "$lock_path" || true
+    fi
     return "$status"
-  elif [ "$lock_resolved" = 1 ] \
-       && { [ "${FM_LOCK_HELD_PID:-}" = "$$" ] || [ "${FM_LOCK_HELD_PID:-}" = "${BASHPID:-$$}" ]; }; then
-    # Lock resolved but held by the current process (e.g., the spawn caller
-    # already acquired it via spawn_herdr_presentation_order_lock_acquire):
-    # proceed without re-acquiring or releasing, since the caller owns the lock.
-    fm_backend_herdr_projection_create_task_serialized "$@"
-    return $?
   elif [ "$lock_resolved" = 1 ]; then
     echo "warning: herdr presentation task create could not acquire its session presentation lock; refusing an unlocked projection" >&2
     return 1
