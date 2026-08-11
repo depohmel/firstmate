@@ -55,6 +55,15 @@ check can fail (i.e. produce a negative verdict); a predicate that can never say
    `FM_BOSUN_NPROGRESS_SECS` (default 1800), while the crew is still busy
    (running step or non-terminal status), is escalated.
 
+9. **Inflight sibling conflicts** — When a task's PR is merged, every other
+   open PR in that repo was validated against the old base and may now be
+   `CONFLICTING` or behind the base, silently stalling its pipeline. This
+   check reads the task's `pr=` URL, lists the repo's open PRs via
+   `gh pr list`, and for each sibling calls `gh pr view --json mergeable`
+   (surfaces `CONFLICTING`) and `--json behindBase` (surfaces `true`). Siblings
+   needing a rebase are escalated as `stale`-kind wakes on the merged task.
+   It **reports only** — never rebases, pushes, or writes to any branch.
+
 ## Hard safety boundaries
 
 - Never merges a PR, never approves or dismisses a review finding, never
