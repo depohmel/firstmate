@@ -137,6 +137,15 @@
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
+#   --dispatch-rationale "<text>" names which crew-dispatch rule justified an
+#   explicit --model tier; required for ship/scout spawns when config/crew-dispatch.json
+#   is active and --model is set, unless --dispatch-override is supplied. The rationale is
+#   recorded in state/<id>.meta as dispatch_rationale= so a later session can see why the
+#   tier was chosen. --secondmate spawns are exempt, and the flag is a no-op when
+#   crew-dispatch.json is absent.
+#   --dispatch-override "<reason>" bypasses the rationale requirement for this spawn only;
+#   the reason is recorded in state/<id>.meta as dispatch_override=. The two flags are
+#   mutually exclusive.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -212,6 +221,10 @@ EFFORT_SET=0
 BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
+DISPATCH_RATIONALE_SET=0
+DISPATCH_OVERRIDE_SET=0
+DISPATCH_RATIONALE=
+DISPATCH_OVERRIDE_REASON=
 POS=()
 want_value=
 for a in "$@"; do
@@ -226,6 +239,8 @@ for a in "$@"; do
       backend) BACKEND_ARG=$a; BACKEND_SET=1 ;;
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
+      dispatch-rationale) DISPATCH_RATIONALE=$a; DISPATCH_RATIONALE_SET=1 ;;
+      dispatch-override) DISPATCH_OVERRIDE_REASON=$a; DISPATCH_OVERRIDE_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -246,6 +261,10 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
+    --dispatch-rationale) want_value=dispatch-rationale ;;
+    --dispatch-rationale=*) DISPATCH_RATIONALE=${a#--dispatch-rationale=}; DISPATCH_RATIONALE_SET=1 ;;
+    --dispatch-override) want_value=dispatch-override ;;
+    --dispatch-override=*) DISPATCH_OVERRIDE_REASON=${a#--dispatch-override=}; DISPATCH_OVERRIDE_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -256,6 +275,11 @@ done
 [ "$BACKEND_SET" -eq 0 ] || [ -n "$BACKEND_ARG" ] || { echo "error: --backend requires a non-empty value" >&2; exit 1; }
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
+[ "$DISPATCH_RATIONALE_SET" -eq 0 ] || [ -n "$DISPATCH_RATIONALE" ] || { echo "error: --dispatch-rationale requires a non-empty value" >&2; exit 1; }
+[ "$DISPATCH_OVERRIDE_SET" -eq 0 ] || [ -n "$DISPATCH_OVERRIDE_REASON" ] || { echo "error: --dispatch-override requires a non-empty value" >&2; exit 1; }
+if [ "$DISPATCH_RATIONALE_SET" -eq 1 ] && [ "$DISPATCH_OVERRIDE_SET" -eq 1 ]; then
+  echo "error: --dispatch-rationale and --dispatch-override are mutually exclusive; supply one or the other" >&2; exit 1
+fi
 case "$EFFORT" in
   ''|low|medium|high|xhigh|max) ;;
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
@@ -438,6 +462,36 @@ spawn_herdr_presentation_order_lock_release() {
   fm_lock_release "$HERDR_PRESENTATION_ORDER_LOCK" || true
 }
 
+# Render the available crew-dispatch.json rules and their models so a caller sees the
+# menu at the moment a tier-guard refusal fires. Uses jq (required by bootstrap when
+# the file is active); degrades gracefully when jq or the file is unavailable.
+dispatch_profile_menu() {
+  local file=$1
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  (crew-dispatch.json is present but jq is unavailable - cannot render the rule menu)"
+    return 0
+  fi
+  if ! jq -e . "$file" >/dev/null 2>&1; then
+    echo "  (config/crew-dispatch.json is present but not valid JSON - cannot render the rule menu)"
+    return 0
+  fi
+  jq -r '
+    def profile_str($p):
+      ($p.harness | tostring)
+      + (if ($p.model? != null) then "/" + ($p.model | tostring) else "" end)
+      + (if ($p.effort? != null) then "/" + ($p.effort | tostring) else "" end);
+    def use_str($u):
+      if ($u | type) == "array" then
+        "[" + ([$u[]? | profile_str(.)] | join(", ")) + "]"
+      else
+        profile_str($u)
+      end;
+    "Available crew-dispatch rules:",
+    (.rules // [] | to_entries[] | "  when: \"" + (.value.when) + "\" -> use: " + use_str(.value.use)),
+    (if has("default") then "  default: " + use_str(.default) else empty end)
+  ' "$file" 2>/dev/null
+}
+
 # Batch dispatch (see header): when the first positional is an `id=repo` pair, treat every
 # positional as one and spawn each by re-execing this script in single-task mode. We use
 # the FM_ROOT path (not $0) so it works whatever cwd or relative path invoked us, and reuse
@@ -462,6 +516,8 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   # spanning several modes is two invocations rather than a silent mixed dispatch.
   [ "$MODE_SET" -eq 0 ] || shared_args+=(--mode "$MODE")
   [ "$YOLO_SET" -eq 0 ] || shared_args+=(--yolo "$YOLO")
+  [ "$DISPATCH_RATIONALE_SET" -eq 0 ] || shared_args+=(--dispatch-rationale "$DISPATCH_RATIONALE")
+  [ "$DISPATCH_OVERRIDE_SET" -eq 0 ] || shared_args+=(--dispatch-override "$DISPATCH_OVERRIDE_REASON")
   for pair in "${POS[@]}"; do
     case "$pair" in
       *=*) : ;;
@@ -479,6 +535,26 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   done
   exit "$rc"
 fi
+
+# Dispatch profile model tier guard (AGENTS.md section 4; docs/configuration.md
+# "Crew dispatch profiles"): when crew-dispatch.json is active, an explicit
+# --model is a deliberate tier choice that must be consciously justified rather
+# than hand-typed without consulting the rules. A spawn with no --model inherits
+# the dispatch profile's model (or static config) and needs no rationale.
+# --secondmate spawns are exempt. The script does NOT parse the natural-language
+# rules to pick a profile - that is firstmate's job - it only requires the caller
+# to have made the choice consciously via --dispatch-rationale or to have
+# bypassed with an explicitly recorded --dispatch-override.
+if [ "$KIND" != secondmate ] && [ -f "$CONFIG/crew-dispatch.json" ] \
+   && [ "$MODEL_SET" -eq 1 ] && [ "$DISPATCH_RATIONALE_SET" -eq 0 ] \
+   && [ "$DISPATCH_OVERRIDE_SET" -eq 0 ]; then
+  echo "error: config/crew-dispatch.json is active and --model ${MODEL} was explicitly requested, but --dispatch-rationale or --dispatch-override was not supplied" >&2
+  echo "refusing to launch a crewmate whose model tier was chosen without consulting the dispatch rules" >&2
+  echo "" >&2
+  dispatch_profile_menu "$CONFIG/crew-dispatch.json" >&2
+  exit 1
+fi
+
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
 SPAWN_TASK_LOCK="$STATE/.spawn-$ID.lock"
@@ -1744,6 +1820,14 @@ META_WINDOW=$T
   if [ "$KIND" = secondmate ]; then
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
+  fi
+  # Dispatch rationale: why a model tier was chosen when crew-dispatch.json is
+  # active. Recorded only when the dispatch profile is present so a later session
+  # can see WHY the tier was selected instead of re-deriving it. Newlines are
+  # collapsed to keep the meta line-structured.
+  if [ -f "$CONFIG/crew-dispatch.json" ]; then
+    [ -z "$DISPATCH_RATIONALE" ] || printf 'dispatch_rationale=%s\n' "${DISPATCH_RATIONALE//$'\n'/ }"
+    [ -z "$DISPATCH_OVERRIDE_REASON" ] || printf 'dispatch_override=%s\n' "${DISPATCH_OVERRIDE_REASON//$'\n'/ }"
   fi
 } > "$STATE/$ID.meta"
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
