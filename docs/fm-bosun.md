@@ -64,6 +64,15 @@ check can fail (i.e. produce a negative verdict); a predicate that can never say
    needing a rebase are escalated as `stale`-kind wakes on the merged task.
    It **reports only** — never rebases, pushes, or writes to any branch.
 
+10. **Idle fleet with queued work** — A fleet-level check that fires when no
+    crew has a live endpoint **and** the backlog has ready dispatchable work
+    (`tasks-axi ready`, which excludes held and blocked items). When both hold,
+    it escalates with the count and top 5 ready ids. This catches the recurring
+    pattern where firstmate finishes a wave of work, retires the last worker,
+    and stops dispatching while dozens of ready items sit in the backlog.
+    Does **not** fire when away mode is active, the backlog has nothing ready,
+    everything ready is blocked or held, or the fleet has live crew.
+
 ## Hard safety boundaries
 
 - Never merges a PR, never approves or dismisses a review finding, never
