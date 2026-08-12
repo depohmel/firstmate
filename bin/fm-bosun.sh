@@ -716,6 +716,84 @@ _escalate_no_progress() {  # <id> <reason>
   bosun_state_set "$id" no-progress "1"
 }
 
+# --- Check: idle fleet with queued ready work ------------------------------
+#
+# WHY IT MATTERS: firstmate repeatedly finishes a wave of work, retires the
+# last worker, and stops dispatching while dozens of ready items sit in the
+# backlog. It has happened at least four times in two days, including a
+# ten-hour stretch with 97 ready items and an empty fleet. The captain has
+# had to notice and say so every single time. Nothing in the fleet currently
+# detects "fleet empty but work waiting" - there are 8 per-task checks and
+# none looks at fleet-wide dispatch starvation.
+#
+# The bosun already runs every 10 minutes on cron, so this check turns a human
+# catching it into the machine catching it within 10 minutes.
+#
+# Condition: no live crew (no state/<id>.meta with a live endpoint) AND the
+# backlog has ready dispatchable work (tasks-axi ready, which excludes held
+# and blocked items). When both hold, report LOUDLY with the count and top
+# ids.
+#
+# An empty fleet is NOT always wrong: do NOT fire when the backlog has nothing
+# ready, when everything ready is blocked or held (tasks-axi ready already
+# excludes those), or when away mode is active (state/.afk) - those are
+# legitimate quiet states.
+check_idle_fleet() {
+  local live_count=0 meta backend target
+  local ready_output ready_count ready_ids
+
+  # Away mode = legitimate quiet state. The captain is stepped away;
+  # dispatch will resume when they return.
+  if [ -e "$STATE/.afk" ]; then
+    bosun_log "idle-fleet:skip:away-mode"
+    return 0
+  fi
+
+  # Count metas with a live backend endpoint. A meta without a window/target
+  # has no endpoint and is not a live crew member.
+  for meta in "$STATE"/*.meta; do
+    [ -e "$meta" ] || continue
+    backend=$(fm_backend_of_meta "$meta")
+    target=$(fm_backend_target_of_meta "$meta")
+    [ -n "$target" ] || continue
+    if fm_backend_target_exists "$backend" "$target"; then
+      live_count=$((live_count + 1))
+    fi
+  done
+
+  # Fleet has live crew: not idle, nothing to report.
+  if [ "$live_count" -gt 0 ]; then
+    bosun_log "idle-fleet:silent:live-crew=$live_count"
+    return 0
+  fi
+
+  # Fleet is idle. Check for ready (unblocked, unheld) dispatchable work.
+  command -v tasks-axi >/dev/null 2>&1 || { bosun_log "idle-fleet:skip:tasks-axi-missing"; return 0; }
+
+  ready_output=$(cd "$FM_HOME" && tasks-axi ready 2>/dev/null) || ready_output=""
+  ready_count=$(printf '%s\n' "$ready_output" | sed -n 's/^count: //p' | head -1)
+  case "$ready_count" in ''|*[!0-9]*) ready_count=0 ;; esac
+
+  if [ "$ready_count" -gt 0 ]; then
+    # Extract top 5 dispatchable ids from the ready[...] section.
+    ready_ids=$(printf '%s\n' "$ready_output" \
+      | sed -n '/^ready\[/,/^ready_public_followups/p' \
+      | sed 's/^[[:space:]]*//' \
+      | grep -E '^[A-Za-z0-9._-]+,' \
+      | cut -d, -f1 \
+      | head -5 | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    if [ "$FM_BOSUN_DRY_RUN" = 1 ]; then
+      bosun_log "idle-fleet:WOULD-escalate:ready=$ready_count top-ids=$ready_ids"
+    else
+      fm_wake_append "stale" "idle-fleet" \
+        "BOSUN-ESCALATION: idle fleet with $ready_count ready work items, top ids: $ready_ids" 2>/dev/null || true
+      bosun_log "idle-fleet:escalated:ready=$ready_count top-ids=$ready_ids"
+    fi
+  else
+    bosun_log "idle-fleet:silent:no-ready-work"
+  fi
+}
+
 # --- Main ---
 main() {
   bosun_log "cycle:start dry-run=$FM_BOSUN_DRY_RUN"
@@ -735,6 +813,7 @@ main() {
   done
 
   check_deploy_drift
+  check_idle_fleet
   bosun_trim_log
   bosun_log "cycle:end"
 }
