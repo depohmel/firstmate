@@ -2888,7 +2888,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
 # back to the plain close, matching the pre-hardening contract.
 fm_backend_herdr_kill_serialized() {  # <session> <pane>
   local session=$1 pane=$2
-  local before active_tab info target_pane target_tab target_ws plan shell_pid plan_move_record close_failed workspace_presence
+  local before active_tab info target_pane target_tab target_ws plan shell_pid plan_move_record close_failed workspace_presence kill_focus_before
   before=$(fm_backend_herdr_projection_focus_snapshot "$session") || before=
   if [ -n "$before" ]; then
     active_tab=${before#*$'\t'}
@@ -2932,7 +2932,17 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
       return 0
     fi
   fi
+  # FALLTHROUGH: the focus-safe branch above did not apply (either the focus
+  # snapshot was empty, the pane identity was ambiguous, or the target tab is
+  # the active tab). Mirror the CREATE path's snapshot/restore contract: capture
+  # focus before the explicit close and restore it on every exit route, including
+  # failure. A missing focus snapshot (lock unresolvable) still PROCEEDS rather
+  # than refusing, preserving the pre-hardening behaviour for normal spawns.
+  kill_focus_before=${before:-$(fm_backend_herdr_projection_focus_snapshot "$session" || true)}
   fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane" || true
+  if [ -n "$kill_focus_before" ]; then
+    fm_backend_herdr_projection_focus_restore "$session" "$kill_focus_before" "task kill" || true
+  fi
 }
 
 fm_backend_herdr_kill() {  # <target>
