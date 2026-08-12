@@ -2,8 +2,11 @@
 # Contract tests for bin/fm-bosun.sh - the scheduled supervisory chores helper.
 #
 # Covers: uncommitted-work threshold, steer rate-cap, lock preventing concurrent
-# runs, unpushed-commits detection, and PR-readiness verdict (review predates
-# head / review newer than head / no reviews yet) via a minimal fake gh.
+# runs, unpushed-commits detection, PR-readiness verdict (review predates
+# head / review newer than head / no reviews yet) via a minimal fake gh,
+# stalled run-step, no-progress crew, inflight sibling conflicts, and idle-fleet
+# detection (empty fleet + ready work fires; empty fleet + nothing ready, only
+# held/blocked, or busy fleet stay silent) via a fake tmux and tasks-axi.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -32,6 +35,7 @@ run_bosun() {
   PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_ROOT_OVERRIDE="$ROOT" FM_BOSUN_FAKE_GH_DIR="$home/gh-fixtures" \
     FM_BOSUN_FAKE_NM_DIR="$home/nm-fixtures" \
+    FM_BOSUN_FAKE_TMUX_DIR="$home/gh-fixtures" \
     FM_BOSUN_DRY_RUN=1 "$BOSUN"
 }
 
@@ -122,7 +126,64 @@ old_mtime() {
   touch -d '1 hour ago' "$1" 2>/dev/null || touch "$1"
 }
 
-# Subshell helper: acquire the bosun lock and hold it briefly.
+# write_fake_tmux <home> [alive-target...]: create a fake tmux that reports a
+# target as alive iff it appears (one per line) in
+# $FM_BOSUN_FAKE_TMUX_DIR/alive_targets. With no alive targets, every endpoint
+# is dead (idle fleet). For other subcommands, exits 0 silently.
+write_fake_tmux() {  # <home> [alive-target...]
+  local home=$1 target
+  cat > "$home/fakebin/tmux" <<'FAKETMUX'
+#!/usr/bin/env bash
+# Fake tmux for idle-fleet tests: reports a target as alive iff it appears
+# (one per line) in $FM_BOSUN_FAKE_TMUX_DIR/alive_targets.
+if [ "${1:-}" = "display-message" ]; then
+  target=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -t) shift; target="${1:-}" ;;
+    esac
+    shift
+  done
+  if [ -n "$target" ] && \
+     [ -f "${FM_BOSUN_FAKE_TMUX_DIR:-/nonexistent}/alive_targets" ] && \
+     grep -Fxq "$target" "${FM_BOSUN_FAKE_TMUX_DIR}/alive_targets" 2>/dev/null; then
+    printf '%%pane-0\n'
+    exit 0
+  fi
+  exit 1
+fi
+exit 0
+FAKETMUX
+  chmod +x "$home/fakebin/tmux"
+  : > "$home/gh-fixtures/alive_targets"
+  shift
+  for target in "$@"; do
+    printf '%s\n' "$target" >> "$home/gh-fixtures/alive_targets"
+  done
+}
+
+# setup_backlog_config <home>: copy .tasks.toml and create data/ so tasks-axi
+# can read/write the backlog in the test home.
+setup_backlog_config() {  # <home>
+  local home=$1
+  mkdir -p "$home/data"
+  cp "$ROOT/.tasks.toml" "$home/.tasks.toml"
+}
+
+# add_backlog_task <home> <id> <title>: add a queued, unblocked, unheld task.
+add_backlog_task() {  # <home> <id> <title>
+  local home=$1 id=$2 title=$3
+  (cd "$home" && tasks-axi add "$id" "$title" >/dev/null 2>&1)
+}
+
+# hold_backlog_task <home> <id> <reason>: place a task on captain-hold so
+# tasks-axi ready excludes it.
+hold_backlog_task() {  # <home> <id> <reason>
+  local home=$1 id=$2 reason=$3
+  (cd "$home" && tasks-axi hold "$id" --reason "$reason" --kind captain >/dev/null 2>&1)
+}
+
+# --- Subshell helper: acquire the bosun lock and hold it briefly.
 # Takes <home> as $1 to avoid shellcheck SC2031 on local variables.
 _bosun_hold_lock() {
   local home=$1
@@ -865,6 +926,112 @@ test_no_open_siblings_reports_nothing() {
   pass "no open siblings reports nothing"
 }
 
+# --- Tests: idle fleet with queued ready work ------------------------------
+
+test_idle_fleet_fires_with_ready_work() {
+  local home id log
+  home=$(make_home idle-fires)
+  id=test-idle-fires
+
+  setup_backlog_config "$home"
+  add_backlog_task "$home" "ready-task-1" "ready task one"
+  add_backlog_task "$home" "ready-task-2" "ready task two"
+
+  # Fake tmux: no alive targets -> fleet is idle (endpoint is dead).
+  write_fake_tmux "$home"
+
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" \
+    "project=$home" \
+    "harness=echo"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_grep "idle-fleet:WOULD-escalate" "$log" \
+    "idle fleet with ready work must escalate in dry-run"
+  assert_grep "ready=2" "$log" "must report count of ready items"
+  assert_grep "ready-task-1" "$log" "must list top ids"
+  assert_grep "ready-task-2" "$log" "must list top ids"
+  pass "idle fleet + ready work fires"
+}
+
+test_idle_fleet_silent_without_ready_work() {
+  local home id log
+  home=$(make_home idle-none)
+  id=test-idle-none
+
+  setup_backlog_config "$home"
+  # No tasks added: backlog is empty, nothing ready.
+
+  write_fake_tmux "$home"
+
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" \
+    "project=$home" \
+    "harness=echo"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_grep "idle-fleet" "$log" "idle-fleet check should still run"
+  assert_no_grep "WOULD-escalate" "$log" \
+    "should not escalate when idle fleet has no ready work"
+  pass "idle fleet + nothing ready stays silent"
+}
+
+test_idle_fleet_silent_when_all_held() {
+  local home id log
+  home=$(make_home idle-held)
+  id=test-idle-held
+
+  setup_backlog_config "$home"
+  add_backlog_task "$home" "held-task-1" "held task one"
+  hold_backlog_task "$home" "held-task-1" "captain decision pending"
+
+  write_fake_tmux "$home"
+
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" \
+    "project=$home" \
+    "harness=echo"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_grep "idle-fleet" "$log" "idle-fleet check should still run"
+  assert_no_grep "WOULD-escalate" "$log" \
+    "should not escalate when only held/blocked items exist"
+  pass "idle fleet + only held/blocked items stays silent"
+}
+
+test_idle_fleet_silent_when_busy() {
+  local home id log
+  home=$(make_home idle-busy)
+  id=test-idle-busy
+
+  setup_backlog_config "$home"
+  add_backlog_task "$home" "ready-task-1" "ready task one"
+  add_backlog_task "$home" "ready-task-2" "ready task two"
+
+  # Fake tmux: endpoint is alive -> fleet is busy.
+  write_fake_tmux "$home" "firstmate:fm-$id"
+
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" \
+    "project=$home" \
+    "harness=echo"
+
+  run_bosun "$home"
+
+  log="$home/state/.bosun.log"
+  assert_grep "idle-fleet:silent:live-crew=1" "$log" \
+    "busy fleet should be detected as having live crew"
+  assert_no_grep "WOULD-escalate" "$log" \
+    "should not escalate when fleet is busy even with ready work"
+  pass "busy fleet + ready work stays silent"
+}
+
 # --- Run all tests ---
 
 test_no_progress_crew_detected
@@ -890,3 +1057,7 @@ test_pr_readiness_no_reviews_yet
 test_conflicting_sibling_reported
 test_up_to_date_sibling_not_reported
 test_no_open_siblings_reports_nothing
+test_idle_fleet_fires_with_ready_work
+test_idle_fleet_silent_without_ready_work
+test_idle_fleet_silent_when_all_held
+test_idle_fleet_silent_when_busy
