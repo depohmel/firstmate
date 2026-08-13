@@ -1941,15 +1941,29 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
 # When <journal-path> is provided, the journal is retired after both panes are
 # closed and the seeded pane is confirmed dead, matching the teardown's
 # contract but operating on the exact IDs this function already holds.
+# When <journal-path> is not provided, the function resolves it by scanning
+# $STATE for a journal whose recorded session matches, so both the abort
+# path in fm-spawn.sh and direct callers get correct retirement.
 fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-pane> [journal-path]
   local session=$1 task_pane=$2 seeded_pane=$3 journal=${4:-}
+  local found_journal
   [ -z "$task_pane" ] || fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$task_pane" || true
   if [ -n "$seeded_pane" ] && [ "$seeded_pane" != "$task_pane" ]; then
     fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$seeded_pane" || true
   fi
-  if [ -n "$journal" ] && [ -e "$journal" ] && [ -n "$seeded_pane" ]; then
+  found_journal=$journal
+  if [ -z "$found_journal" ] && [ -n "$STATE" ]; then
+    for found_journal in "$STATE"/*.herdr-presentation; do
+      [ -e "$found_journal" ] || continue
+      [ "$(fm_backend_herdr_projection_journal_field "$found_journal" session 2>/dev/null)" = "$session" ] || continue
+      break
+    done
+    [ -e "$found_journal" ] || found_journal=
+  fi
+  if [ -n "$found_journal" ] && [ -n "$seeded_pane" ]; then
+    echo "DBG-JOURNAL: session=$session seeded=$seeded_pane journal=$found_journal agent_state=$(fm_backend_herdr_pane_agent_state "$session" "$seeded_pane" 2>/dev/null) presence=$(fm_backend_herdr_pane_presence_state "$session" "$seeded_pane" 2>/dev/null)" >&2
     if [ "$(fm_backend_herdr_pane_agent_state "$session" "$seeded_pane")" = dead ]; then
-      rm -f "$journal"
+      rm -f "$found_journal"
     fi
   fi
 }
