@@ -1418,6 +1418,9 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   if ! WT=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "fm-$ID") \
      || [ -z "$WT" ]; then
     echo "error: treehouse get --lease failed for $PROJ_ABS; inspect the pool with 'treehouse status'" >&2
+    if [ -n "${WT:-}" ]; then
+      ( cd "$PROJ_ABS" && treehouse return --force "$WT" ) >/dev/null 2>&1 || true
+    fi
     exit 1
   fi
   LEASE_ABORT_CLEANUP=1
