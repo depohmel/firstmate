@@ -321,7 +321,8 @@ test_active_dispatch_profile_allows_explicit_harness() {
   enable_dispatch_profile "$HOME_DIR"
 
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
-    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort high)
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort high \
+      --dispatch-rationale "trivial mechanical edit matches rule 2")
   status=$?
   expect_code 0 "$status" "explicit harness should satisfy active dispatch-profile requirement"
   assert_contains "$out" "spawned $id harness=codex" "spawn did not report explicit codex harness"
@@ -340,7 +341,8 @@ test_active_dispatch_profile_allows_positional_harness() {
   enable_dispatch_profile "$HOME_DIR"
 
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
-    "$id" "$PROJ_DIR" codex --model gpt-5 --effort high)
+    "$id" "$PROJ_DIR" codex --model gpt-5 --effort high \
+      --dispatch-rationale "trivial mechanical edit matches rule 2")
   status=$?
   expect_code 0 "$status" "positional harness should satisfy active dispatch-profile requirement"
   assert_contains "$out" "spawned $id harness=codex" "spawn did not report positional codex harness"
@@ -596,7 +598,8 @@ test_batch_forwards_shared_profile_flags() {
   enable_dispatch_profile "$HOME_DIR"
 
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
-    "$id1=$PROJ_DIR" "$id2=$PROJ_DIR" --harness codex --model gpt-5 --effort high)
+    "$id1=$PROJ_DIR" "$id2=$PROJ_DIR" --harness codex --model gpt-5 --effort high \
+      --dispatch-rationale "trivial mechanical edit matches rule 2")
   status=$?
   expect_code 0 "$status" "batch spawn with shared profile flags should succeed"
   assert_contains "$out" "spawned $id1 harness=codex" "first batch task did not use shared harness"
@@ -673,6 +676,87 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
   pass "active crew-dispatch profile does not block secondmate launches"
 }
 
+test_dispatch_profile_requires_rationale_when_model_explicit() {
+  local rec id out status
+  id=profile-guard-refusal-z20
+  rec=$(make_spawn_case profile-guard-refusal codex "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort high)
+  status=$?
+  expect_code 1 "$status" "explicit model without rationale should be refused when dispatch profiles are active"
+  assert_contains "$out" "config/crew-dispatch.json is active" "refusal did not mention the dispatch profile"
+  assert_contains "$out" "refusing to launch" "refusal did not state it refused the launch"
+  assert_contains "$out" "Available crew-dispatch rules" "refusal did not print the rule menu"
+  assert_contains "$out" "grok-4" "rule menu did not include a rule model"
+  assert_absent "$HOME_DIR/state/$id.meta" "rationale refusal should happen before meta is written"
+  pass "active crew-dispatch profile refuses an explicit model tier without a rationale and prints the rule menu"
+}
+
+test_dispatch_profile_rationale_allows_explicit_model_spawn() {
+  local rec id out status launch
+  id=profile-guard-rational-z21
+  rec=$(make_spawn_case profile-guard-rational codex "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort high \
+      --dispatch-rationale "trivial mechanical edit matches rule 2")
+  status=$?
+  expect_code 0 "$status" "rationale should permit the spawn"
+  assert_contains "$out" "spawned $id harness=codex" "spawn did not report codex"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5 high
+  assert_grep "dispatch_rationale=trivial mechanical edit matches rule 2" "$HOME_DIR/state/$id.meta" \
+    "meta did not record the dispatch rationale"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "codex --model 'gpt-5' -c 'model_reasoning_effort=\"high\"' --dangerously-bypass-approvals-and-sandbox" \
+    "rationale-provided spawn did not thread model and effort"
+  pass "active crew-dispatch profile permits an explicit model tier with a recorded rationale"
+}
+
+test_dispatch_profile_override_spawns_and_records_reason() {
+  local rec id out status
+  id=profile-guard-override-z22
+  rec=$(make_spawn_case profile-guard-override codex "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort high \
+      --dispatch-override "consciously choosing codex/gpt-5 for this task")
+  status=$?
+  expect_code 0 "$status" "override should permit the spawn"
+  assert_contains "$out" "spawned $id harness=codex" "override spawn did not report codex"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5 high
+  assert_grep "dispatch_override=consciously choosing codex/gpt-5 for this task" \
+    "$HOME_DIR/state/$id.meta" "meta did not record the dispatch override reason"
+  pass "--dispatch-override bypasses the rationale requirement and records the reason in meta"
+}
+
+test_dispatch_profile_absent_needs_no_rationale() {
+  local rec id out status launch
+  id=profile-guard-absent-z23
+  rec=$(make_spawn_case profile-guard-absent claude "$id")
+  read_case_record "$rec"
+  # No enable_dispatch_profile - crew-dispatch.json is absent.
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --model sonnet --effort high \
+      --dispatch-rationale "not applicable without dispatch rules")
+  status=$?
+  expect_code 0 "$status" "spawn without crew-dispatch.json should succeed even with --dispatch-rationale"
+  assert_contains "$out" "spawned $id harness=claude" "spawn did not report claude"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" claude sonnet high
+  assert_not_contains "$(cat "$HOME_DIR/state/$id.meta")" "dispatch_rationale" \
+    "meta should not record a rationale when crew-dispatch.json is absent"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "claude --dangerously-skip-permissions --model 'sonnet' --effort 'high'" \
+    "no-dispatch spawn did not thread model and effort"
+  pass "absent crew-dispatch.json needs no rationale; --dispatch-rationale is a no-op"
+}
 test_no_profile_keeps_claude_profile_defaults
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths
@@ -699,5 +783,9 @@ test_claude_forwards_firstmate_config_dir_when_set
 test_claude_omits_config_dir_prefix_when_unset
 test_non_claude_harness_ignores_config_dir
 test_active_dispatch_profile_does_not_block_secondmate_launch
+test_dispatch_profile_requires_rationale_when_model_explicit
+test_dispatch_profile_rationale_allows_explicit_model_spawn
+test_dispatch_profile_override_spawns_and_records_reason
+test_dispatch_profile_absent_needs_no_rationale
 
 echo "# all fm-spawn-dispatch-profile tests passed"
