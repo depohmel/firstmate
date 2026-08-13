@@ -599,6 +599,9 @@ rm -rf "$ACTIVE_SEEDED_CONTROL"
 ACTIVE_SEEDED_LOCK=$(session_presentation_lock_path) \
   || fail "could not resolve the session presentation lock for active-seeded cleanup"
 ACTIVE_SEEDED_CLEANUP_FOCUS_START=$(focus_audit_line_count)
+echo "DEBUG: task_pane=$ACTIVE_SEEDED_TASK_PANE seeded_pane=$ACTIVE_SEEDED_PANE session=$HERDR_LAB_SESSION" >&2
+env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane get "$ACTIVE_SEEDED_PANE" >&2 2>&1 || echo "DEBUG: seeded pane get failed" >&2
+env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane get "$ACTIVE_SEEDED_TASK_PANE" >&2 2>&1 || echo "DEBUG: task pane get failed" >&2
 PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" bash -c '
   . "$0/bin/fm-wake-lib.sh"
   . "$0/bin/backends/herdr.sh"
