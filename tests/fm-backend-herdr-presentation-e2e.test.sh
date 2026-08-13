@@ -598,6 +598,7 @@ assert_focus_is "$CAPTAIN_FOCUS" "active seeded-tab fixture restoration"
 rm -rf "$ACTIVE_SEEDED_CONTROL"
 ACTIVE_SEEDED_LOCK=$(session_presentation_lock_path) \
   || fail "could not resolve the session presentation lock for active-seeded cleanup"
+ACTIVE_SEEDED_CLEANUP_FOCUS_START=$(focus_audit_line_count)
 PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" bash -c '
   . "$0/bin/fm-wake-lib.sh"
   . "$0/bin/backends/herdr.sh"
@@ -606,13 +607,9 @@ PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" bash -c '
   fm_backend_herdr_projection_cleanup_exact "$2" "$3" "$4"
   fm_lock_release "$lock"
 ' "$ROOT" "$ACTIVE_SEEDED_LOCK" "$HERDR_LAB_SESSION" "$ACTIVE_SEEDED_TASK_PANE" "$ACTIVE_SEEDED_PANE"
-# Focus-safe teardown is not yet implemented. All projected-teardown focus
-# assertions are skipped pending a follow-up PR. See
-# data/fm-herdr-race-scout/report.md (Design A create→abort-cleanup lock
-# gap / projected-pane focus drift). All lock fixes and the focus-restore
-# scaffolding remain in place.
-pass "SKIPPED: active seeded-tab fixture cleanup (focus-safe projected teardown not yet implemented; see data/fm-herdr-race-scout/report.md)"
-pass "SKIPPED: active seeded-tab fixture cleanup focus-preservation (focus-safe projected teardown not yet implemented; see data/fm-herdr-race-scout/report.md)"
+assert_focus_is "$CAPTAIN_FOCUS" "active seeded-tab fixture cleanup"
+assert_cleanup_focus_preserved "$ACTIVE_SEEDED_CLEANUP_FOCUS_START" "$ACTIVE_SEEDED_PANE" "$CAPTAIN_FOCUS"
+[ ! -e "$HOME_DIR/state/active-seeded.herdr-presentation" ] || fail "active-seeded cleanup left a presentation journal behind"
 rm -f "$HOME_DIR/state/active-seeded.herdr-presentation"
 pass "real Herdr lab: active seeded-tab pruning refuses the exact pane and preserves exact focus"
 
@@ -665,7 +662,7 @@ assert_focus_is "$CAPTAIN_FOCUS" "bounded presentation lock flat fallback"
 assert_raw_presentation_mutations_preserved_since "$LOCK_CONTENTION_FOCUS_START" "bounded presentation lock flat fallback"
 teardown_task lock-contended "$HOME_DIR" > "$TMP_ROOT/lock-contended-teardown.out" 2> "$TMP_ROOT/lock-contended-teardown.err" \
   || fail "flat lock-contention fixture teardown failed"
-pass "SKIPPED: bounded presentation lock flat fallback teardown (focus-safe projected teardown not yet implemented; see data/fm-herdr-race-scout/report.md)"
+assert_focus_is "$CAPTAIN_FOCUS" "bounded presentation lock flat fallback teardown"
 pass "real Herdr lab: bounded lock contention warns and falls back flat without projection or focus drift"
 PROJECTION_ORDER_START=$(log_line_count)
 
@@ -751,17 +748,13 @@ FAIL_CLOSED_PANES=$(sed -n "$((FAIL_START + 1)),\$p" "$HERDR_CALL_LOG" | awk -F 
 assert_no_ordering_lifecycle_calls_since "$FAIL_START" "failed presentation ordering"
 pass "real Herdr lab: forced workspace.move failure leaves a successful worker in default order with a warning and no cleanup"
 
-# SKIPPED: 'concurrent post-create abort cleanup' cannot pass with the current
-# lock design. Scout Design A (data/fm-herdr-race-scout/report.md) makes
-# FM_LOCK_HELD_PID reliable on success and gates create_task's release on
-# lock_owned_by_us, so the spawn caller's ORDER lock now spans acquire ->
-# create -> move -> journal -> validate -> abort-cleanup as intended. But the
-# concurrent create-to-abort-cleanup span still interleaves in the e2e lab.
-# The guarantee it protects - each projection's workspace create is immediately
-# followed by its own task-pane close - is documented here as an open gap
-# rather than silently dropped. The move-path serialization is still enforced
-# by the 'concurrent primary workers' test above.
-if false; then
+# Concurrent post-create abort cleanup: each projection's workspace create is
+# immediately followed by its own task-pane close. The spawn caller's ORDER
+# lock now spans acquire -> create -> move -> journal -> validate ->
+# abort-cleanup as one continuous hold (fm_lock_try_acquire sets
+# FM_LOCK_HELD_PID on success; the wrappers that broke this were removed so
+# the spawn holds the lock across the entire create→abort-cleanup span).
+if true; then
 mkdir -p "$POST_CREATE_ABORT_CONTROL"
 ABORT_START=$(log_line_count)
 ABORT_FOCUS_START=$(focus_audit_line_count)
@@ -807,14 +800,12 @@ rm -rf "$POST_CREATE_ABORT_CONTROL"
 rm -f "$HOME_DIR/state/abort-a.herdr-presentation" "$HOME_DIR/state/abort-b.herdr-presentation"
 pass "real Herdr lab: concurrent post-create abort cleanup stays serialized with exact focus restoration"
 fi
-pass "real Herdr lab: concurrent post-create abort cleanup (SKIPPED: open gap after Design A, see data/fm-herdr-race-scout/report.md)"
+pass "real Herdr lab: concurrent post-create abort cleanup stays serialized with exact focus restoration"
 rm -rf "$POST_CREATE_ABORT_CONTROL"
 rm -f "$HOME_DIR/state/abort-a.herdr-presentation" "$HOME_DIR/state/abort-b.herdr-presentation"
 
-# (Focus-safe teardown is not yet implemented — see the shared comment
-# above at the active seeded-tab fixture cleanup for the full note.)
 teardown_task shape "$HOME_DIR" > "$TMP_ROOT/on-teardown.out" 2> "$TMP_ROOT/on-teardown.err" || true
-if false; then
+if true; then
 SHAPE_CLEANUP_AUDIT_START=$(focus_audit_line_count)
 assert_focus_is "$CAPTAIN_FOCUS" "projected teardown"
 assert_cleanup_focus_preserved "$SHAPE_CLEANUP_AUDIT_START" "$PROJECTED_PANE" "$CAPTAIN_FOCUS"
@@ -827,7 +818,7 @@ lab pane get "$SECOND_TWO_PANE" >/dev/null 2>&1 \
 [ ! -e "$JOURNAL" ] || fail "confirmed projected teardown did not retire its presentation journal"
 pass "real Herdr lab: exact task-pane close removes the projected workspace with no unrestored wrong-focus interval"
 fi
-pass "real Herdr lab: projected teardown focus-safety (SKIPPED: focus-safe projected teardown not yet implemented; see data/fm-herdr-race-scout/report.md)"
+pass "real Herdr lab: projected teardown focus-safety"
 
 teardown_task order-a "$HOME_DIR" > "$TMP_ROOT/order-a-teardown.out" 2> "$TMP_ROOT/order-a-teardown.err" &
 ORDER_A_TEARDOWN_PID=$!
@@ -835,10 +826,11 @@ teardown_task order-b "$HOME_DIR" > "$TMP_ROOT/order-b-teardown.out" 2> "$TMP_RO
 ORDER_B_TEARDOWN_PID=$!
 wait "$ORDER_A_TEARDOWN_PID" || fail "projected ordering fixture A teardown failed"
 wait "$ORDER_B_TEARDOWN_PID" || fail "projected ordering fixture B teardown failed"
-pass "SKIPPED: concurrent projected teardowns (focus-safe projected teardown not yet implemented; see data/fm-herdr-race-scout/report.md)"
+assert_focus_is "$CAPTAIN_FOCUS" "concurrent projected teardowns"
+pass "real Herdr lab: concurrent projected cleanup is serialized and leaves active workspace/tab unchanged"
 teardown_task order-fail "$HOME_DIR" > "$TMP_ROOT/order-fail-teardown.out" 2> "$TMP_ROOT/order-fail-teardown.err" \
   || fail "projected ordering failure fixture teardown failed"
-pass "SKIPPED: failed-order projection teardown (focus-safe projected teardown not yet implemented; see data/fm-herdr-race-scout/report.md)"
+assert_focus_is "$CAPTAIN_FOCUS" "failed-order projection teardown"
 pass "real Herdr lab: concurrent projected cleanup is serialized and leaves active workspace/tab unchanged"
 
 # Repeat full two-worker create, order, and cleanup waves.
@@ -875,7 +867,7 @@ for ROUND in 1 2 3; do
   WAVE_B_TEARDOWN_PID=$!
   wait "$WAVE_A_TEARDOWN_PID" || fail "focus wave $ROUND teardown A failed"
   wait "$WAVE_B_TEARDOWN_PID" || fail "focus wave $ROUND teardown B failed"
-  pass "SKIPPED: focus wave $ROUND concurrent teardowns (focus-safe projected teardown not yet implemented; see data/fm-herdr-race-scout/report.md)"
+  assert_focus_is "$CAPTAIN_FOCUS" "focus wave $ROUND concurrent teardowns"
   WAVE_REMAINING=$(lab workspace list | jq -r '.result.workspaces[].label')
   [ "$WAVE_REMAINING" = $'firstmate\n2ndmate-alpha\n2ndmate-bravo' ] \
     || fail "focus wave $ROUND cleanup left a projected workspace behind: $WAVE_REMAINING"
