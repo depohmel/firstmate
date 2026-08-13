@@ -114,6 +114,8 @@ label=$(arg_value --label "$@" || true)
 if [ "${1:-} ${2:-}" = "workspace list" ] && [ -d "$ACTIVE_SEEDED_CONTROL" ]; then
   stage=$(cat "$ACTIVE_SEEDED_CONTROL/stage" 2>/dev/null || true)
   if [ "$stage" = task-created ]; then
+    printf '%s\n' post-task-snapshot > "$ACTIVE_SEEDED_CONTROL/stage"
+  elif [ "$stage" = post-task-snapshot ]; then
     seeded_tab=$(cat "$ACTIVE_SEEDED_CONTROL/seeded-tab")
     inject_before=$(focus_snapshot || printf ambiguous/ambiguous)
     env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" tab focus "$seeded_tab" >/dev/null
@@ -597,7 +599,6 @@ rm -rf "$ACTIVE_SEEDED_CONTROL"
 ACTIVE_SEEDED_LOCK=$(session_presentation_lock_path) \
   || fail "could not resolve the session presentation lock for active-seeded cleanup"
 ACTIVE_SEEDED_CLEANUP_FOCUS_START=$(focus_audit_line_count)
-echo "DEBUG-CLEANUP: session=$HERDR_LAB_SESSION task=$ACTIVE_SEEDED_TASK_PANE seeded=$ACTIVE_SEEDED_PANE" >&2
 PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" bash -c '
   . "$0/bin/fm-wake-lib.sh"
   . "$0/bin/backends/herdr.sh"
