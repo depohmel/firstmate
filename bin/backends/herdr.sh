@@ -642,8 +642,20 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
   target_pane=$(printf '%s' "$info" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
   target_tab=$(printf '%s' "$info" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
   target_ws=$(printf '%s' "$info" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
-  if [ "$target_pane" != "$pane_id" ] || [ -z "$target_tab" ]; then
+  # Fallback for truncated herdr pane get output: if jq failed to parse
+  # but the exact pane_id appears in the raw output, the pane exists.
+  # Focus preservation is handled by the before/after snapshots.
+  if { [ -z "$target_pane" ] || [ -z "$target_tab" ]; } && printf '%s' "$info" | grep -q "\"pane_id\": *\"$pane_id\""; then
+    target_pane="$pane_id"
+    target_tab=""
+    target_ws=""
+  fi
+  if [ "$target_pane" != "$pane_id" ]; then
     echo "warning: herdr presentation cleanup received an ambiguous exact-pane response; refusing focus-unsafe pane close" >&2
+    return 1
+  fi
+  if [ -n "$target_tab" ] && [ "$target_tab" = "$active_tab" ]; then
+    echo "warning: herdr presentation cleanup target is the captain's active tab; refusing a close that cannot preserve focus" >&2
     return 1
   fi
   if [ "$target_tab" = "$active_tab" ]; then
