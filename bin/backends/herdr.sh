@@ -684,9 +684,15 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
         ;;
     esac
   fi
-  if fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id"; then
-    close_status=0
-  elif [ "$plan" = death ] && fm_backend_herdr_death_close_pane "$session" "$pane_id" "$plan_shell_pid"; then
+  if [ "$plan" = death ]; then
+    if fm_backend_herdr_death_close_pane "$session" "$pane_id" "$plan_shell_pid"; then
+      close_status=0
+    elif fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id"; then
+      close_status=0
+    else
+      close_status=1
+    fi
+  elif fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id"; then
     close_status=0
   else
     close_status=1
@@ -1598,10 +1604,18 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
 
 # fm_backend_herdr_pane_presence_state: classify one exact pane get response
 # as dead|present|unknown from its JSON body, never from process exit status.
+# Retries only when jq cannot parse the body at all (truncated). A valid JSON
+# response with the wrong shape (e.g. a tab-list body hitting a call-numbered
+# fake) is a definitive answer: return unknown immediately so the retry does
+# not consume extra fake-herdr call slots.
 fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
   local session=$1 pane_id=$2 out code pid attempt
   for attempt in 1 2 3; do
-    out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null)
+    out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>&1)
+    if ! printf '%s' "$out" | jq -e . >/dev/null 2>&1; then
+      [ "$attempt" -lt 3 ] && sleep 0.05
+      continue
+    fi
     code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
     if [ -n "$code" ]; then
       [ "$code" = "pane_not_found" ] && printf 'dead' || printf 'unknown'
@@ -1612,10 +1626,8 @@ fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
       printf 'present'
       return 0
     fi
-    # jq failed to parse: the response may be truncated. Retry briefly
-    # so a transitional or dying pane can settle to a parseable dead or
-    # present response before reporting unknown.
-    [ "$attempt" -lt 3 ] && sleep 0.05
+    printf 'unknown'
+    return 0
   done
   printf 'unknown'
 }
@@ -1688,7 +1700,7 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
     esac
     return 0
   fi
-  out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>/dev/null)
+  out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>&1)
   code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
   if [ -n "$code" ]; then
     [ "$code" = "agent_not_found" ] && printf 'no-agent' || printf 'unknown'
