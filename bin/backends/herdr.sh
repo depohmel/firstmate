@@ -628,10 +628,14 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
     return 1
   }
   active_tab=${before#*$'\t'}
-  info=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null) || {
+  echo "DEBUG pane get: session=$session pane_id=$pane_id" >&2
+  info=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null)
+  local pane_get_status=$?
+  echo "DEBUG pane get status=$pane_get_status output=${info:-<empty>}" >&2
+  if [ "$pane_get_status" -ne 0 ] || [ -z "$info" ]; then
     echo "warning: herdr presentation cleanup could not verify the exact pane; refusing focus-unsafe pane close" >&2
     return 1
-  }
+  fi
   target_pane=$(printf '%s' "$info" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
   target_tab=$(printf '%s' "$info" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
   target_ws=$(printf '%s' "$info" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
