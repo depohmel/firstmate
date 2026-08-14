@@ -754,7 +754,6 @@ pass "real Herdr lab: forced workspace.move failure leaves a successful worker i
 # abort-cleanup as one continuous hold (fm_lock_try_acquire sets
 # FM_LOCK_HELD_PID on success; the wrappers that broke this were removed so
 # the spawn holds the lock across the entire create→abort-cleanup span).
-if true; then
 mkdir -p "$POST_CREATE_ABORT_CONTROL"
 ABORT_START=$(log_line_count)
 ABORT_FOCUS_START=$(focus_audit_line_count)
@@ -764,7 +763,6 @@ spawn_task abort-b "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-b.out" 2> "$TMP
 ABORT_B_PID=$!
 if wait "$ABORT_A_PID"; then fail "post-create abort fixture A unexpectedly succeeded"; fi
 if wait "$ABORT_B_PID"; then fail "post-create abort fixture B unexpectedly succeeded"; fi
-echo "DEBUG abort-a.err:" >&2; cat "$TMP_ROOT/abort-a.err" >&2; echo "DEBUG abort-b.err:" >&2; cat "$TMP_ROOT/abort-b.err" >&2
 grep -F "did not yield an isolated worktree" "$TMP_ROOT/abort-a.err" >/dev/null 2>&1 \
   || fail "post-create abort fixture A did not reach the armed validation failure"
 grep -F "did not yield an isolated worktree" "$TMP_ROOT/abort-b.err" >/dev/null 2>&1 \
@@ -801,13 +799,10 @@ done
 rm -rf "$POST_CREATE_ABORT_CONTROL"
 rm -f "$HOME_DIR/state/abort-a.herdr-presentation" "$HOME_DIR/state/abort-b.herdr-presentation"
 pass "real Herdr lab: concurrent post-create abort cleanup stays serialized with exact focus restoration"
-fi
-pass "real Herdr lab: concurrent post-create abort cleanup stays serialized with exact focus restoration"
 rm -rf "$POST_CREATE_ABORT_CONTROL"
 rm -f "$HOME_DIR/state/abort-a.herdr-presentation" "$HOME_DIR/state/abort-b.herdr-presentation"
 
 teardown_task shape "$HOME_DIR" > "$TMP_ROOT/on-teardown.out" 2> "$TMP_ROOT/on-teardown.err" || true
-if true; then
 SHAPE_CLEANUP_AUDIT_START=$(focus_audit_line_count)
 assert_focus_is "$CAPTAIN_FOCUS" "projected teardown"
 assert_cleanup_focus_preserved "$SHAPE_CLEANUP_AUDIT_START" "$PROJECTED_PANE" "$CAPTAIN_FOCUS"
@@ -817,13 +812,8 @@ if lab workspace get "$PROJECTED_WSID" >/dev/null 2>&1; then
 fi
 lab pane get "$SECOND_TWO_PANE" >/dev/null 2>&1 \
   || fail "projected teardown affected the focused secondmate workspace"
-echo "DEBUG SHAPE: JOURNAL=$JOURNAL exists=$([ -e "$JOURNAL" ] && echo YES || echo NO)" >&2
-echo "--- TEARDOWN ERR ---" >&2
-cat "$TMP_ROOT/on-teardown.err" >&2 || true
-echo "--- END TEARDOWN ERR ---" >&2
 [ ! -e "$JOURNAL" ] || fail "confirmed projected teardown did not retire its presentation journal"
 pass "real Herdr lab: exact task-pane close removes the projected workspace with no unrestored wrong-focus interval"
-fi
 pass "real Herdr lab: projected teardown focus-safety"
 
 teardown_task order-a "$HOME_DIR" > "$TMP_ROOT/order-a-teardown.out" 2> "$TMP_ROOT/order-a-teardown.err" &
