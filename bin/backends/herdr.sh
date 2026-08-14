@@ -1953,21 +1953,27 @@ fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-p
   fi
   found_journal=$journal
   if [ -z "$found_journal" ] && [ -n "$STATE" ]; then
-    for found_journal in "$STATE"/*.herdr-presentation; do
-      [ -e "$found_journal" ] || continue
-      # Version 2 journals have a session field: match by pane_id AND session
-      if journal_pane=$(fm_backend_herdr_projection_journal_field "$found_journal" pane_id 2>/dev/null) \
+    found_journal=""
+    for candidate in "$STATE"/*.herdr-presentation; do
+      [ -e "$candidate" ] || continue
+      # Version 2 journals have a pane_id field: match by pane_id AND session
+      if journal_pane=$(fm_backend_herdr_projection_journal_field "$candidate" pane_id 2>/dev/null) \
          && [ -n "$journal_pane" ]; then
-        journal_session=$(fm_backend_herdr_projection_journal_field "$found_journal" session 2>/dev/null)
-        [ "$journal_session" = "$session" ] && [ "$journal_pane" = "$task_pane" ] && break
+        journal_session=$(fm_backend_herdr_projection_journal_field "$candidate" session 2>/dev/null)
+        if [ "$journal_session" = "$session" ] && [ "$journal_pane" = "$seeded_pane" ]; then
+          found_journal="$candidate"
+          break
+        fi
         continue
       fi
-      # Version 1 journals lack session/pane_id: match task_id against file name
-      file_id=$(basename "$found_journal" .herdr-presentation)
-      journal_id=$(fm_backend_herdr_projection_journal_field "$found_journal" task_id 2>/dev/null)
-      [ "$journal_id" = "$file_id" ] && break
+      # Version 1 journals lack pane_id: match task_id against file name
+      file_id=$(basename "$candidate" .herdr-presentation)
+      journal_id=$(fm_backend_herdr_projection_journal_field "$candidate" task_id 2>/dev/null)
+      if [ "$journal_id" = "$file_id" ]; then
+        found_journal="$candidate"
+        break
+      fi
     done
-    [ -e "$found_journal" ] || found_journal=
   fi
   if [ -n "$found_journal" ] && [ -n "$seeded_pane" ]; then
     if [ "$(fm_backend_herdr_pane_agent_state "$session" "$seeded_pane")" = dead ]; then

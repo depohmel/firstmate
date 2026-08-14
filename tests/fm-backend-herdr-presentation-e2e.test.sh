@@ -604,9 +604,9 @@ PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" bash -c '
   . "$0/bin/backends/herdr.sh"
   lock=$1
   fm_lock_acquire_wait "$lock"
-  fm_backend_herdr_projection_cleanup_exact "$2" "$3" "$4"
+  fm_backend_herdr_projection_cleanup_exact "$2" "$3" "$4" "$5"
   fm_lock_release "$lock"
-' "$ROOT" "$ACTIVE_SEEDED_LOCK" "$HERDR_LAB_SESSION" "$ACTIVE_SEEDED_TASK_PANE" "$ACTIVE_SEEDED_PANE"
+' "$ROOT" "$ACTIVE_SEEDED_LOCK" "$HERDR_LAB_SESSION" "$ACTIVE_SEEDED_TASK_PANE" "$ACTIVE_SEEDED_PANE" "$HOME_DIR/state/active-seeded.herdr-presentation"
 assert_focus_is "$CAPTAIN_FOCUS" "active seeded-tab fixture cleanup"
 assert_cleanup_focus_preserved "$ACTIVE_SEEDED_CLEANUP_FOCUS_START" "$ACTIVE_SEEDED_PANE" "$CAPTAIN_FOCUS"
 [ ! -e "$HOME_DIR/state/active-seeded.herdr-presentation" ] || fail "active-seeded cleanup left a presentation journal behind"
