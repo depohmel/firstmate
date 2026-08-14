@@ -1976,9 +1976,7 @@ fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-p
     done
   fi
   if [ -n "$found_journal" ] && [ -n "$seeded_pane" ]; then
-    if [ "$(fm_backend_herdr_pane_agent_state "$session" "$seeded_pane")" = dead ]; then
-      rm -f "$found_journal"
-    fi
+    rm -f "$found_journal"
   fi
 }
 
