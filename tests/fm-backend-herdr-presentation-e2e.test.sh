@@ -183,6 +183,17 @@ if [ "$status" -eq 0 ] && [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$POST_CREATE
     break
   done
 fi
+# The death path confirms pane death by polling `pane get` until the live
+# herdr server returns error code pane_not_found. The fake herdr passes that
+# real response through unchanged, so pane_not_found is a genuine per-task
+# event. Log it as pane-gone so the ABORT_SEQUENCE assertion can verify
+# serialization when the death path (not the explicit close) is used.
+if [ "${1:-} ${2:-}" = "pane get" ] && [ -z "$mutation" ] \
+  && printf '%s' "$out" | jq -e '.error.code == "pane_not_found"' >/dev/null 2>&1; then
+  mutation=pane-gone
+  mutation_target="${3:-}"
+  before=$(focus_snapshot || printf ambiguous/ambiguous)
+fi
 if [ -n "$mutation" ]; then
   after=$(focus_snapshot || printf ambiguous/ambiguous)
   printf '%s\t%s\t%s\t%s\n' "$mutation" "$before" "$after" "$mutation_target" >> "$FOCUS_AUDIT_LOG"
@@ -772,8 +783,15 @@ ABORT_B_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-b/task-pane")
 ABORT_SEQUENCE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
   $1 == "workspace-create" && $4 ~ /^└ abort-a · p:/ { print "create-a" }
   $1 == "workspace-create" && $4 ~ /^└ abort-b · p:/ { print "create-b" }
-  $1 == "pane-close" && $4 == a { print "close-a" }
-  $1 == "pane-close" && $4 == b { print "close-b" }
+  # Accept both pane-close (explicit path) and pane-gone (death path) as
+  # the per-task completion marker. The death path SIGHUPs the shell and
+  # lets herdr reap the pane; it does NOT call `pane close`, so no pane-close
+  # mutation is emitted. Instead, the death path polls `pane get` until it
+  # returns pane_not_found, which the fake herdr logs as pane-gone. Both are
+  # genuine per-task events. Use seen_a/seen_b to avoid double-counting when
+  # the explicit path emits both pane-close and pane-gone for the same task.
+  ($1 == "pane-close" || $1 == "pane-gone") && $4 == a && !seen_a { print "close-a"; seen_a=1 }
+  ($1 == "pane-close" || $1 == "pane-gone") && $4 == b && !seen_b { print "close-b"; seen_b=1 }
 ')
 
 case "$ABORT_SEQUENCE" in
@@ -781,7 +799,7 @@ case "$ABORT_SEQUENCE" in
   *) fail "concurrent post-create abort cleanup interleaved outside the presentation lock: $ABORT_SEQUENCE" ;;
 esac
 ABORT_UNRESTORED=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
-  ($1 == "workspace-create" || $1 == "tab-create" || $1 == "workspace-move" || ($1 == "pane-close" && $4 != a && $4 != b)) && $2 != $3 { print }
+  ($1 == "workspace-create" || $1 == "tab-create" || $1 == "workspace-move" || ($1 == "pane-close" && $4 != a && $4 != b) || ($1 == "pane-gone" && $4 != a && $4 != b)) && $2 != $3 { print }
 ')
 [ -z "$ABORT_UNRESTORED" ] \
   || fail "post-create abort create, prune, or move changed exact focus: $ABORT_UNRESTORED"
