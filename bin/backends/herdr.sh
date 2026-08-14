@@ -1955,17 +1955,21 @@ fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-p
   if [ -z "$found_journal" ] && [ -n "$STATE" ]; then
     for found_journal in "$STATE"/*.herdr-presentation; do
       [ -e "$found_journal" ] || continue
-      [ "$(fm_backend_herdr_projection_journal_field "$found_journal" session 2>/dev/null)" = "$session" ] || continue
-      break
+      # Version 2 journals have a session field: match by pane_id AND session
+      if journal_pane=$(fm_backend_herdr_projection_journal_field "$found_journal" pane_id 2>/dev/null) \
+         && [ -n "$journal_pane" ]; then
+        journal_session=$(fm_backend_herdr_projection_journal_field "$found_journal" session 2>/dev/null)
+        [ "$journal_session" = "$session" ] && [ "$journal_pane" = "$task_pane" ] && break
+        continue
+      fi
+      # Version 1 journals lack session/pane_id: match task_id against file name
+      file_id=$(basename "$found_journal" .herdr-presentation)
+      journal_id=$(fm_backend_herdr_projection_journal_field "$found_journal" task_id 2>/dev/null)
+      [ "$journal_id" = "$file_id" ] && break
     done
     [ -e "$found_journal" ] || found_journal=
   fi
   if [ -n "$found_journal" ] && [ -n "$seeded_pane" ]; then
-    echo "DBG-JOURNAL: session=$session seeded=$seeded_pane journal=$found_journal agent_state=$(fm_backend_herdr_pane_agent_state "$session" "$seeded_pane" 2>/dev/null) presence=$(fm_backend_herdr_pane_presence_state "$session" "$seeded_pane" 2>/dev/null)" >&2
-    if [ "$(fm_backend_herdr_pane_agent_state "$session" "$seeded_pane")" = dead ]; then
-      rm -f "$found_journal"
-    fi
-  fi
 }
 
 # fm_backend_herdr_projection_parent_workspace_exact: resolve one exact parent
