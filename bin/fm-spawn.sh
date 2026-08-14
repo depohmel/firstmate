@@ -1394,7 +1394,8 @@ kimi_spawn_fail() {  # <detail>
   echo "error: $1; inspect window $T" >&2
 }
 
-if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+echo "DEBUG before lease: KIND=$KIND BACKEND=$BACKEND" >&2
+  if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # Acquire the worktree from this script, so the recorded path is always what
   # treehouse actually leased rather than a cwd observed in the pane.
   #
