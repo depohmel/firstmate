@@ -817,7 +817,10 @@ if lab workspace get "$PROJECTED_WSID" >/dev/null 2>&1; then
 fi
 lab pane get "$SECOND_TWO_PANE" >/dev/null 2>&1 \
   || fail "projected teardown affected the focused secondmate workspace"
-echo "DEBUG SHAPE: JOURNAL=$JOURNAL exists=$([ -e "$JOURNAL" ] && echo YES || echo NO) TEARDOWN_ERR=$(cat "$TMP_ROOT/on-teardown.err" 2>/dev/null || echo 'no file')" >&2
+echo "DEBUG SHAPE: JOURNAL=$JOURNAL exists=$([ -e "$JOURNAL" ] && echo YES || echo NO)" >&2
+echo "--- TEARDOWN ERR ---" >&2
+cat "$TMP_ROOT/on-teardown.err" >&2 || true
+echo "--- END TEARDOWN ERR ---" >&2
 [ ! -e "$JOURNAL" ] || fail "confirmed projected teardown did not retire its presentation journal"
 pass "real Herdr lab: exact task-pane close removes the projected workspace with no unrestored wrong-focus interval"
 fi
