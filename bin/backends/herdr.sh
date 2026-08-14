@@ -650,16 +650,11 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
     target_tab=""
     target_ws=""
   fi
-  echo "DEBUG close: pane_id=$pane_id target_pane=$target_pane target_tab=${target_tab:-<empty>} active_tab=${active_tab:-<empty>}" >&2
   if [ "$target_pane" != "$pane_id" ]; then
     echo "warning: herdr presentation cleanup received an ambiguous exact-pane response; refusing focus-unsafe pane close" >&2
     return 1
   fi
   if [ -n "$target_tab" ] && [ "$target_tab" = "$active_tab" ]; then
-    echo "warning: herdr presentation cleanup target is the captain's active tab; refusing a close that cannot preserve focus" >&2
-    return 1
-  fi
-  if [ "$target_tab" = "$active_tab" ]; then
     echo "warning: herdr presentation cleanup target is the captain's active tab; refusing a close that cannot preserve focus" >&2
     return 1
   fi
@@ -689,9 +684,8 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
         ;;
     esac
   fi
-  echo "DEBUG before-close: pane_id=$pane_id plan=$plan target_ws=${target_ws:-<empty>}" >&2
   if [ "$plan" = death ]; then
-    if fm_backend_herdr_death_close_pane "$session" "$pane_id" "$plan_shell_pid"; then
+    if fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id"; then
       close_status=0
     elif fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id"; then
       close_status=0
