@@ -1645,7 +1645,6 @@ elif [ "$BACKEND" = herdr ]; then
 elif [ "$BACKEND" != orca ]; then
   fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
 fi
-echo "DEBUG TEARDOWN: RETIRE=$HERDR_PRESENTATION_RETIRE_CANDIDATE BACKEND=$BACKEND T=$T SESSION=$HERDR_PRESENTATION_SESSION WS=$HERDR_PRESENTATION_WORKSPACE PANE=$HERDR_PRESENTATION_PANE JOURNAL=$HERDR_PRESENTATION_JOURNAL ID=$ID JMATCH=$(fm_backend_herdr_projection_endpoint_matches_journal "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_WORKSPACE" "$HERDR_PRESENTATION_JOURNAL" "$ID" 2>/dev/null && echo YES || echo NO) AGENT=$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE" 2>/dev/null || echo ERR)" >&2
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   if [ "$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE")" = dead ]; then
     rm -f "$HERDR_PRESENTATION_JOURNAL"
