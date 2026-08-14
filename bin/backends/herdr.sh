@@ -1608,15 +1608,25 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
 # fm_backend_herdr_pane_presence_state: classify one exact pane get response
 # as dead|present|unknown from its JSON body, never from process exit status.
 fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out code pid
-  out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>&1)
-  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
-  if [ -n "$code" ]; then
-    [ "$code" = "pane_not_found" ] && printf 'dead' || printf 'unknown'
-    return 0
-  fi
-  pid=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
-  [ "$pid" = "$pane_id" ] && printf 'present' || printf 'unknown'
+  local session=$1 pane_id=$2 out code pid attempt
+  for attempt in 1 2 3; do
+    out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null)
+    code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
+    if [ -n "$code" ]; then
+      [ "$code" = "pane_not_found" ] && printf 'dead' || printf 'unknown'
+      return 0
+    fi
+    pid=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
+    if [ "$pid" = "$pane_id" ]; then
+      printf 'present'
+      return 0
+    fi
+    # jq failed to parse: the response may be truncated. Retry briefly
+    # so a transitional or dying pane can settle to a parseable dead or
+    # present response before reporting unknown.
+    [ "$attempt" -lt 3 ] && sleep 0.05
+  done
+  printf 'unknown'
 }
 
 fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
@@ -1687,7 +1697,7 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
     esac
     return 0
   fi
-  out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>&1)
+  out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>/dev/null)
   code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
   if [ -n "$code" ]; then
     [ "$code" = "agent_not_found" ] && printf 'no-agent' || printf 'unknown'
