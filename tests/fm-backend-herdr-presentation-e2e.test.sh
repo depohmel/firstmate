@@ -141,7 +141,9 @@ if [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$ACTIVE_SEEDED_CONTROL" ] \
   refusal_before=$(focus_snapshot || printf ambiguous/ambiguous)
 fi
 before=
-[ -z "$mutation" ] || before=$(focus_snapshot || printf ambiguous/ambiguous)
+if [ -n "$mutation" ] || [ "${1:-} ${2:-}" = "pane get" ]; then
+  before=$(focus_snapshot || printf ambiguous/ambiguous)
+fi
 if out=$(env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"); then
   status=0
 else
@@ -192,7 +194,6 @@ if [ "${1:-} ${2:-}" = "pane get" ] && [ -z "$mutation" ] \
   && printf '%s' "$out" | jq -e '.error.code == "pane_not_found"' >/dev/null 2>&1; then
   mutation=pane-gone
   mutation_target="${3:-}"
-  before=$(focus_snapshot || printf ambiguous/ambiguous)
 fi
 if [ -n "$mutation" ]; then
   after=$(focus_snapshot || printf ambiguous/ambiguous)
@@ -780,18 +781,34 @@ grep -F "did not yield an isolated worktree" "$TMP_ROOT/abort-b.err" >/dev/null 
   || fail "post-create abort fixture B did not reach the armed validation failure"
 ABORT_A_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-a/task-pane")
 ABORT_B_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-b/task-pane")
-ABORT_SEQUENCE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
+# The death path closes the task pane by SIGHUP (no pane-close mutation for
+# the task pane itself). The close_pane_focus_preserving cleanup then closes
+# the seeded pane with the explicit path, producing a pane-close event for
+# the seeded pane - a genuine per-task completion marker. Extract it from
+# the focus audit log so the serialization assertion can use it.
+ABORT_ASEEDED_PANE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" '
+  $1 == "workspace-create" && $4 ~ /^└ abort-a · p:/ { found=1 }
+  found && $1 == "pane-close" && $4 != a { print $4; exit }
+')
+ABORT_BSEEDED_PANE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v b="$ABORT_B_PANE" '
+  $1 == "workspace-create" && $4 ~ /^└ abort-b · p:/ { found=1 }
+  found && $1 == "pane-close" && $4 != b { print $4; exit }
+')
+ABORT_SEQUENCE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" -v sa="$ABORT_ASEEDED_PANE" -v sb="$ABORT_BSEEDED_PANE" '
   $1 == "workspace-create" && $4 ~ /^└ abort-a · p:/ { print "create-a" }
   $1 == "workspace-create" && $4 ~ /^└ abort-b · p:/ { print "create-b" }
   # Accept both pane-close (explicit path) and pane-gone (death path) as
   # the per-task completion marker. The death path SIGHUPs the shell and
-  # lets herdr reap the pane; it does NOT call `pane close`, so no pane-close
-  # mutation is emitted. Instead, the death path polls `pane get` until it
-  # returns pane_not_found, which the fake herdr logs as pane-gone. Both are
-  # genuine per-task events. Use seen_a/seen_b to avoid double-counting when
-  # the explicit path emits both pane-close and pane-gone for the same task.
-  ($1 == "pane-close" || $1 == "pane-gone") && $4 == a && !seen_a { print "close-a"; seen_a=1 }
-  ($1 == "pane-close" || $1 == "pane-gone") && $4 == b && !seen_b { print "close-b"; seen_b=1 }
+  # lets herdr reap the pane; it does NOT call pane close, so no pane-close
+  # mutation is emitted for the task pane. Instead, the death path polls
+  # pane get until it returns pane_not_found, which the fake herdr logs as
+  # pane-gone. The seeded pane is always closed via the explicit path, so
+  # its pane-close event is also a valid completion marker. Both are genuine
+  # per-task events. Use seen_a/seen_b to take only the first completion
+  # event per task (the task pane close if explicit, else the seeded pane
+  # close), so double-counting never breaks the serialization ordering.
+  ($1 == "pane-close" || $1 == "pane-gone") && ($4 == a || $4 == sa) && !seen_a { print "close-a"; seen_a=1 }
+  ($1 == "pane-close" || $1 == "pane-gone") && ($4 == b || $4 == sb) && !seen_b { print "close-b"; seen_b=1 }
 ')
 
 case "$ABORT_SEQUENCE" in
