@@ -1947,6 +1947,7 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
 fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-pane> [journal-path]
   local session=$1 task_pane=$2 seeded_pane=$3 journal=${4:-}
   local found_journal
+  echo "DEBUG cleanup_exact: session=$session task_pane=$task_pane seeded_pane=$seeded_pane journal=${journal:-<empty>}" >&2
   [ -z "$task_pane" ] || fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$task_pane" || true
   if [ -n "$seeded_pane" ] && [ "$seeded_pane" != "$task_pane" ]; then
     fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$seeded_pane" || true
