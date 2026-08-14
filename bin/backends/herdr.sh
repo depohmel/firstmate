@@ -628,10 +628,13 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
     return 1
   }
   active_tab=${before#*$'\t'}
-  echo "DEBUG pane get: session=$session pane_id=$pane_id" >&2
-  info=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null)
-  local pane_get_status=$?
-  echo "DEBUG pane get status=$pane_get_status output=${info:-<empty>}" >&2
+  local attempt pane_get_status
+  for attempt in 1 2 3; do
+    info=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null)
+    pane_get_status=$?
+    [ "$pane_get_status" -eq 0 ] && [ -n "$info" ] && break
+    [ "$attempt" -lt 3 ] && sleep 0.2
+  done
   if [ "$pane_get_status" -ne 0 ] || [ -z "$info" ]; then
     echo "warning: herdr presentation cleanup could not verify the exact pane; refusing focus-unsafe pane close" >&2
     return 1
@@ -1951,11 +1954,8 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
 fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-pane> [journal-path]
   local session=$1 task_pane=$2 seeded_pane=$3 journal=${4:-}
   local found_journal
-  echo "DEBUG cleanup_exact: session=$session task_pane=$task_pane seeded_pane=$seeded_pane journal=${journal:-<empty>}" >&2
-  [ -z "$task_pane" ] || fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$task_pane" || true
-  if [ -n "$seeded_pane" ] && [ "$seeded_pane" != "$task_pane" ]; then
-    fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$seeded_pane" || true
-  fi
+  # Resolve the journal path BEFORE closing panes, so both the scan and the
+  # create-then-close pair execute under the caller's presentation-order lock.
   found_journal=$journal
   if [ -z "$found_journal" ] && [ -n "$STATE" ]; then
     found_journal=""
@@ -1979,6 +1979,10 @@ fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-p
         break
       fi
     done
+  fi
+  [ -z "$task_pane" ] || fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$task_pane" || true
+  if [ -n "$seeded_pane" ] && [ "$seeded_pane" != "$task_pane" ]; then
+    fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$seeded_pane" || true
   fi
   if [ -n "$found_journal" ] && [ -n "$seeded_pane" ]; then
     rm -f "$found_journal"

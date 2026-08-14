@@ -359,7 +359,6 @@ parse_orca_worktree_result() {
 
 spawn_abort_cleanup() {
   local status=$?
-  echo "DEBUG spawn_abort_cleanup: status=$status ABORT_CLEANUP=$HERDR_PROJECTION_ABORT_CLEANUP LOCK_HELD=$HERDR_PRESENTATION_ORDER_LOCK_HELD" >&2
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
      && [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
     if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
@@ -1429,7 +1428,6 @@ echo "DEBUG before lease: KIND=$KIND BACKEND=$BACKEND" >&2
     exit 1
   fi
   LEASE_ABORT_CLEANUP=1
-  echo "DEBUG treehouse: BACKEND=$BACKEND KIND=$KIND WT='${WT:-}' LEASE_ABORT=${HERDR_PROJECTION_ABORT_CLEANUP:-0}" >&2
 
   validate_spawn_worktree "treehouse get --lease" "$T"
 
