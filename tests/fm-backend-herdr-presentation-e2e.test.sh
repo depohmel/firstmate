@@ -764,6 +764,7 @@ spawn_task abort-b "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-b.out" 2> "$TMP
 ABORT_B_PID=$!
 if wait "$ABORT_A_PID"; then fail "post-create abort fixture A unexpectedly succeeded"; fi
 if wait "$ABORT_B_PID"; then fail "post-create abort fixture B unexpectedly succeeded"; fi
+echo "DEBUG abort-a.err:" >&2; cat "$TMP_ROOT/abort-a.err" >&2; echo "DEBUG abort-b.err:" >&2; cat "$TMP_ROOT/abort-b.err" >&2
 grep -F "did not yield an isolated worktree" "$TMP_ROOT/abort-a.err" >/dev/null 2>&1 \
   || fail "post-create abort fixture A did not reach the armed validation failure"
 grep -F "did not yield an isolated worktree" "$TMP_ROOT/abort-b.err" >/dev/null 2>&1 \
