@@ -632,10 +632,10 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
   for attempt in 1 2 3; do
     info=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null)
     pane_get_status=$?
-    [ "$pane_get_status" -eq 0 ] && [ -n "$info" ] && break
+    [ "$pane_get_status" -eq 0 ] && break
     [ "$attempt" -lt 3 ] && sleep 0.2
   done
-  if [ "$pane_get_status" -ne 0 ] || [ -z "$info" ]; then
+  if [ "$pane_get_status" -ne 0 ]; then
     echo "warning: herdr presentation cleanup could not verify the exact pane; refusing focus-unsafe pane close" >&2
     return 1
   fi
@@ -684,9 +684,15 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
         ;;
     esac
   fi
-  if fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id"; then
-    close_status=0
-  elif [ "$plan" = death ] && fm_backend_herdr_death_close_pane "$session" "$pane_id" "$plan_shell_pid"; then
+  if [ "$plan" = death ]; then
+    if fm_backend_herdr_death_close_pane "$session" "$pane_id" "$plan_shell_pid"; then
+      close_status=0
+    elif fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id"; then
+      close_status=0
+    else
+      close_status=1
+    fi
+  elif fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id"; then
     close_status=0
   else
     close_status=1
