@@ -580,6 +580,7 @@ fm_backend_herdr_projection_focus_restore() {  # <session> <snapshot> <operation
     return 1
   }
   after=$(fm_backend_herdr_projection_focus_snapshot "$session") || after=
+  echo "DEBUG RESTORE: before=$before after=$after operation=$operation" >&2
   [ "$after" != "$before" ] || return 0
   workspace=${before%%$'\t'*}
   tab=${before#*$'\t'}
@@ -598,6 +599,7 @@ fm_backend_herdr_projection_focus_restore() {  # <session> <snapshot> <operation
     return 1
   }
   restored=$(fm_backend_herdr_projection_focus_snapshot "$session") || restored=
+  echo "DEBUG RESTORE: restored=$restored operation=$operation" >&2
   if [ "$restored" != "$before" ]; then
     echo "warning: herdr presentation $operation did not restore the exact prior workspace and tab" >&2
     return 1
@@ -684,15 +686,9 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
         ;;
     esac
   fi
-  if [ "$plan" = death ]; then
-    if fm_backend_herdr_death_close_pane "$session" "$pane_id" "$plan_shell_pid"; then
-      close_status=0
-    elif fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id"; then
-      close_status=0
-    else
-      close_status=1
-    fi
-  elif fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id"; then
+  if fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id"; then
+    close_status=0
+  elif [ "$plan" = death ] && fm_backend_herdr_death_close_pane "$session" "$pane_id" "$plan_shell_pid"; then
     close_status=0
   else
     close_status=1
@@ -707,7 +703,9 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
   if [ "$close_status" -ne 0 ]; then
     fm_backend_herdr_emptying_move_rollback "$plan_move_record" || true
   fi
+  echo "DEBUG CLOSE: before=$before plan=$plan close_status=$close_status focus_after_close=$(fm_backend_herdr_projection_focus_snapshot "$session" 2>/dev/null || echo ERR)" >&2
   fm_backend_herdr_projection_focus_restore "$session" "$before" "pane close" || return 2
+  echo "DEBUG CLOSE: focus_after_restore=$(fm_backend_herdr_projection_focus_snapshot "$session" 2>/dev/null || echo ERR)" >&2
   [ "$close_status" -eq 0 ]
 }
 
@@ -1601,6 +1599,7 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
 fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
   local session=$1 pane_id=$2 out code pid
   out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>&1)
+  echo "DEBUG PRESENCE: pane_id=$pane_id out=$(printf '%s' "$out" | head -c 80 | tr '\n' ' ')" >&2
   code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
   if [ -n "$code" ]; then
     [ "$code" = "pane_not_found" ] && printf 'dead' || printf 'unknown'
