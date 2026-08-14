@@ -701,21 +701,12 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
   if [ "$close_status" -ne 0 ]; then
     fm_backend_herdr_emptying_move_rollback "$plan_move_record" || true
   fi
-  # Bounded presence-confirmation poll: the close above may have been an
-  # explicit pane.close or a pane-death kill; either way, the structured
-  # journal-retirement check in fm-teardown.sh calls pane_agent_state, which
-  # calls pane_presence_state. For task panes with truncated herdr pane get
-  # output, that read can race ahead of herdr's own removal and return
-  # "unknown" instead of "dead", skipping the journal retirement. Poll the
-  # exact pane's presence state here - bounded, same shape as
-  # explicit_close_pane_confirmed - so the pane is confirmed gone before we
-  # return, without weakening the fm-teardown.sh check itself.
-  if [ "$close_status" -eq 0 ]; then
-    for attempt in 1 2 3 4 5; do
-      [ "$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")" = dead ] && break
-      [ "$attempt" -lt 5 ] && sleep 0.1
-    done
-  fi
+  # The death path's death_close_pane and the explicit path's
+  # explicit_close_pane_confirmed both already poll pane_presence_state for
+  # "dead" with bounded retries before returning, and pane_presence_state
+  # itself now retries on truncated JSON; no extra post-close poll is needed
+  # here, which would otherwise consume a fake-herdr call slot and shift the
+  # call-numbered response sequence in unit tests.
   fm_backend_herdr_projection_focus_restore "$session" "$before" "pane close" || return 2
   [ "$close_status" -eq 0 ]
 }
