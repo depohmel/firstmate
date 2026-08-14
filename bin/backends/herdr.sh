@@ -580,7 +580,6 @@ fm_backend_herdr_projection_focus_restore() {  # <session> <snapshot> <operation
     return 1
   }
   after=$(fm_backend_herdr_projection_focus_snapshot "$session") || after=
-  echo "DEBUG RESTORE: before=$before after=$after operation=$operation" >&2
   [ "$after" != "$before" ] || return 0
   workspace=${before%%$'\t'*}
   tab=${before#*$'\t'}
@@ -599,7 +598,6 @@ fm_backend_herdr_projection_focus_restore() {  # <session> <snapshot> <operation
     return 1
   }
   restored=$(fm_backend_herdr_projection_focus_snapshot "$session") || restored=
-  echo "DEBUG RESTORE: restored=$restored operation=$operation" >&2
   if [ "$restored" != "$before" ]; then
     echo "warning: herdr presentation $operation did not restore the exact prior workspace and tab" >&2
     return 1
@@ -703,9 +701,22 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
   if [ "$close_status" -ne 0 ]; then
     fm_backend_herdr_emptying_move_rollback "$plan_move_record" || true
   fi
-  echo "DEBUG CLOSE: before=$before plan=$plan close_status=$close_status focus_after_close=$(fm_backend_herdr_projection_focus_snapshot "$session" 2>/dev/null || echo ERR)" >&2
+  # Bounded presence-confirmation poll: the close above may have been an
+  # explicit pane.close or a pane-death kill; either way, the structured
+  # journal-retirement check in fm-teardown.sh calls pane_agent_state, which
+  # calls pane_presence_state. For task panes with truncated herdr pane get
+  # output, that read can race ahead of herdr's own removal and return
+  # "unknown" instead of "dead", skipping the journal retirement. Poll the
+  # exact pane's presence state here - bounded, same shape as
+  # explicit_close_pane_confirmed - so the pane is confirmed gone before we
+  # return, without weakening the fm-teardown.sh check itself.
+  if [ "$close_status" -eq 0 ]; then
+    for attempt in 1 2 3 4 5; do
+      [ "$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")" = dead ] && break
+      [ "$attempt" -lt 5 ] && sleep 0.1
+    done
+  fi
   fm_backend_herdr_projection_focus_restore "$session" "$before" "pane close" || return 2
-  echo "DEBUG CLOSE: focus_after_restore=$(fm_backend_herdr_projection_focus_snapshot "$session" 2>/dev/null || echo ERR)" >&2
   [ "$close_status" -eq 0 ]
 }
 
@@ -1599,7 +1610,6 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
 fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
   local session=$1 pane_id=$2 out code pid
   out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>&1)
-  echo "DEBUG PRESENCE: pane_id=$pane_id out=$(printf '%s' "$out" | head -c 80 | tr '\n' ' ')" >&2
   code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
   if [ -n "$code" ]; then
     [ "$code" = "pane_not_found" ] && printf 'dead' || printf 'unknown'
