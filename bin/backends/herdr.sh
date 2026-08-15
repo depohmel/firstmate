@@ -1604,14 +1604,19 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
 
 # fm_backend_herdr_pane_presence_state: classify one exact pane get response
 # as dead|present|unknown from its JSON body, never from process exit status.
-# Retries only when jq cannot parse the body at all (truncated). A valid JSON
-# response with the wrong shape (e.g. a tab-list body hitting a call-numbered
-# fake) is a definitive answer: return unknown immediately so the retry does
-# not consume extra fake-herdr call slots.
+# Captures stderr alongside stdout (2>&1) so a pane_not_found error on stderr
+# is still parseable. If that mixed stream is unparseable (truncated or stderr
+# corrupting the JSON), falls back to a clean 2>/dev/null read before retrying.
+# A valid JSON response with the wrong shape (e.g. a tab-list body hitting a
+# call-numbered fake) is a definitive answer: return unknown immediately so
+# the retry does not consume extra fake-herdr call slots.
 fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
   local session=$1 pane_id=$2 out code pid attempt
   for attempt in 1 2 3; do
     out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>&1)
+    if ! printf '%s' "$out" | jq -e . >/dev/null 2>&1; then
+      out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null)
+    fi
     if ! printf '%s' "$out" | jq -e . >/dev/null 2>&1; then
       [ "$attempt" -lt 3 ] && sleep 0.05
       continue
