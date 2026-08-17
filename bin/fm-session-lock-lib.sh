@@ -117,7 +117,15 @@ fm_harness_ancestry_pids() {
 # returns, and a lock naming it would look stale moments later while the session
 # is still running. Every non-Claude harness reports a single pid, so this is its
 # innermost match unchanged.
+# Codex exec sessions do not expose the harness process in the bash shell's
+# ancestry (the harness runs outside the sandboxed shell), so we identify the
+# session by the CODEX_THREAD_ID env var that Codex injects into every exec
+# call and use the shell's $$ as the session-identifying pid.
 fm_harness_ancestry_pid() {
+  if [ -n "${CODEX_THREAD_ID:-}" ]; then
+    printf '%s\n' "$$"
+    return 0
+  fi
   local pids pid outermost=''
   pids=$(fm_harness_ancestry_pids) || return 1
   while IFS= read -r pid; do
@@ -133,6 +141,13 @@ EOF
 fm_harness_pid_alive() {
   local pid=$1 comm args
   kill -0 "$pid" 2>/dev/null || return 1
+  # Codex exec sessions: the harness PID is the bash shell's $$ from when the
+  # lock was acquired. In Codex mode the harness process sits outside the
+  # sandboxed ancestry, so any live PID is the session owner when
+  # CODEX_THREAD_ID is set (we cannot re-derive $$ from a different shell).
+  if [ -n "${CODEX_THREAD_ID:-}" ]; then
+    return 0
+  fi
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
   args=$(ps -o args= -p "$pid" 2>/dev/null)
   fm_harness_process_matches "$comm" "$args"
