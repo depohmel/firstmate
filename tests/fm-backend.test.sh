@@ -785,7 +785,17 @@ esac
 exit 0
 SH
   chmod +x "$fb/tmux"
-  fm_fake_exit0 "$fb" treehouse
+  # Fake treehouse: answer `get --lease` with the controlled worktree path, the
+  # way the real binary prints only that path on stdout; exit 0 silently for any
+  # other invocation.
+  cat > "$fb/treehouse" <<SH
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [ "\$arg" = "--lease" ]; then printf '%s\\n' "$wt"; exit 0; fi
+done
+exit 0
+SH
+  chmod +x "$fb/treehouse"
   printf '%s\n' "$fb"
 }
 
@@ -818,49 +828,41 @@ run_spawn_case() {  # <bin-root> <fakebin> <log> <state> <data> <config> <proj> 
 
 # --- symlinked project prefix must not false-refuse the isolation guard -----
 #
-# docs/herdr-backend.md "Known gaps": a real backend's pane_current_path read
-# (tmux, herdr) reports the OS-level PHYSICALLY-resolved cwd. When the project
-# itself lives under a symlinked prefix (e.g. macOS's /tmp -> /private/tmp),
-# fm-spawn.sh's PROJ_ABS - a logical `cd && pwd` - differs string-for-string
-# from that physical read even before treehouse moves the pane at all, so the
-# worktree-discovery poll used to mistake an UNMOVED pane for one that had
-# already left the project, handing validate_spawn_worktree the project's own
-# directory as "the worktree" and tripping its false isolation refusal.
-# make_spawn_symlink_fakebin's tmux stub returns an unmoved project path on the
-# first pane_current_path poll, then the real worktree path from the second poll
-# onward, so this test fails loudly if the PROJ_ABS/PROJ_ABS_REAL
-# canonicalization in bin/fm-spawn.sh ever regresses.
-make_spawn_symlink_fakebin() {  # <dir> <initial-project-path> <worktree-path> -> echoes fakebin dir
-  local dir=$1 initial_path=$2 wt=$3 fb="$1/fakebin" counter="$1/poll-count"
+# docs/herdr-backend.md "Known gaps": fm-spawn.sh's PROJ_ABS is a LOGICAL
+# `cd && pwd` (symlink components kept), while validate_spawn_worktree resolves
+# the acquired worktree physically with `pwd -P`. When the project itself lives
+# under a symlinked prefix (e.g. macOS's /tmp -> /private/tmp), the two sides
+# describe the identical directory with different strings, and the isolation
+# guard false-refuses the spawn as "not isolated". The PROJ_ABS_REAL
+# canonicalization in bin/fm-spawn.sh is what keeps that from happening, and
+# this test fails loudly if it ever regresses.
+make_spawn_symlink_fakebin() {  # <dir> <worktree-path> -> echoes fakebin dir
+  local dir=$1 wt=$2 fb="$1/fakebin"
   mkdir -p "$fb"
-  : > "$counter"
   cat > "$fb/tmux" <<SH
 #!/usr/bin/env bash
 set -u
 { printf 'tmux'; for a in "\$@"; do printf '\\x1f%s' "\$a"; done; printf '\\n'; } >> "\${FM_TMUX_LOG:?}"
 case "\${1:-}" in
-  display-message)
-    for a in "\$@"; do case "\$a" in *pane_current_path*)
-      printf x >> "$counter"
-      if [ "\$(wc -c < "$counter")" -le 1 ]; then
-        printf '%s\\n' "$initial_path"
-      else
-        printf '%s\\n' "$wt"
-      fi
-      exit 0
-    ;; esac; done
-    printf 'firstmate\\n'; exit 0 ;;
+  display-message) printf 'firstmate\\n'; exit 0 ;;
   list-windows) exit 0 ;;
 esac
 exit 0
 SH
   chmod +x "$fb/tmux"
-  fm_fake_exit0 "$fb" treehouse
+  cat > "$fb/treehouse" <<SH
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [ "\$arg" = "--lease" ]; then printf '%s\\n' "$wt"; exit 0; fi
+done
+exit 0
+SH
+  chmod +x "$fb/treehouse"
   printf '%s\n' "$fb"
 }
 
-run_spawn_symlink_case() {  # <label> <physical|logical>
-  local label=$1 first_reply=$2 real_root link_root proj wt id fb data state config log out rc proj_phys initial_path
+run_spawn_symlink_case() {  # <label>
+  local label=$1 real_root link_root proj wt id fb data state config log out rc
   real_root="$TMP_ROOT/symlink-real-$label"; link_root="$TMP_ROOT/symlink-link-$label"
   mkdir -p "$real_root"
   ln -s "$real_root" "$link_root"
@@ -868,18 +870,7 @@ run_spawn_symlink_case() {  # <label> <physical|logical>
   wt="$TMP_ROOT/symlink-wt-$label"
   id="spawnsymlink$label"
   fm_git_worktree "$real_root/proj" "$wt" "fm/$id"
-  # TMP_ROOT itself can already sit behind an OS-level symlink (e.g. macOS's
-  # /var -> /private/var), so resolve the fakebin's "physical" reply with
-  # pwd -P rather than string concatenation - it must match exactly what
-  # fm-spawn.sh's own PROJ_ABS_REAL computes, including any symlink layers
-  # ABOVE this test's own synthetic real_root/link_root pair.
-  proj_phys=$(cd "$real_root/proj" && pwd -P)
-  case "$first_reply" in
-    physical) initial_path=$proj_phys ;;
-    logical) initial_path=$proj ;;
-    *) fail "unknown symlink first-reply mode: $first_reply" ;;
-  esac
-  fb=$(make_spawn_symlink_fakebin "$TMP_ROOT/symlink-fake-$label" "$initial_path" "$wt")
+  fb=$(make_spawn_symlink_fakebin "$TMP_ROOT/symlink-fake-$label" "$wt")
   data="$TMP_ROOT/symlink-data-$label"
   mkdir -p "$data/$id"
   printf 'test brief content\n' > "$data/$id/brief.md"
@@ -889,16 +880,15 @@ run_spawn_symlink_case() {  # <label> <physical|logical>
 
   out=$(run_spawn_case "$ROOT" "$fb" "$log" "$state" "$data" "$config" "$proj" -- "$id" "$proj" claude --mode no-mistakes --yolo off 2>&1)
   rc=$?
-  expect_code 0 "$rc" "fm-spawn.sh should succeed for a project reached through a symlinked prefix when the backend reports $first_reply cwd"$'\n'"$out"
+  expect_code 0 "$rc" "fm-spawn.sh should succeed for a project reached through a symlinked prefix"$'\n'"$out"
   assert_contains "$out" "worktree=$wt" \
-    "fm-spawn.sh did not resolve a symlinked-prefix project to its real worktree when the backend reports $first_reply cwd"
+    "fm-spawn.sh did not record the leased worktree for a symlinked-prefix project"
 
   rm -rf "/tmp/fm-$id"
 }
 
 test_spawn_symlinked_project_prefix_avoids_false_refusal() {
-  run_spawn_symlink_case physical physical
-  run_spawn_symlink_case logical logical
+  run_spawn_symlink_case symlink
   pass "fm-spawn.sh: a project reached through a symlinked prefix (e.g. macOS /tmp -> /private/tmp) does not trip the isolation guard's false refusal"
 }
 
