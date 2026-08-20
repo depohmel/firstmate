@@ -2378,21 +2378,6 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
-# Every landed/discard-work refusal above has now passed (or --force skipped
-# them). Fix 1 and Fix 2 (see script header) run here, unconditionally on
-# --force, and before ANY destructive step below - a still-parked run or a
-# leaked process can own live work in this exact worktree. Not for
-# kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
-# dedicated process-event and firstmate-home removal machinery further below,
-# not by task-worktree cleanup.
-if [ "$KIND" != secondmate ]; then
-  conclude_task_no_mistakes_run "$WT"
-  reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
-fi
-
-# Fix 3 (see script header): sweep remote job workers abandoned by an already
-# pruned code root. Best effort - a sweep failure never blocks this teardown.
-"$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true
 
 # A Herdr close may reposition shared workspace order, so the whole
 # destructive sequence below (worktree return, pane close, record removal)
@@ -2410,18 +2395,19 @@ if [ "$BACKEND" = herdr ]; then
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
 fi
 
-# The exact Herdr pane close must run BEFORE the treehouse worktree return
-# below. treehouse return kills every lingering process in the worktree, and
-# the task pane's own shell has exactly that worktree as its cwd. When that
-# kill reaches the Herdr server before firstmate's controlled close, Herdr
-# reaps the pane and drops the workspace through its own pane-death path,
-# clamping the active workspace index to a stale value (handle_pane_died):
-# the active workspace/tab drifts, and for a projected task the journal's
-# workspace disappears before the gate below can see it, quarantining the
-# journal. Closing the exact pane here, under the presentation lock acquired
-# in the preflight above, keeps the removal on the focus-safe close plan with
-# the exact-tab restore backstop; the later treehouse return then finds only
-# orphaned agent processes, whose kill raises no Herdr pane event.
+# The exact Herdr pane close must run BEFORE any worktree-process reap or the
+# treehouse worktree return below. Both reap_task_worktree_processes and
+# treehouse return kill every lingering process in the worktree, and the task
+# pane's own shell has exactly that worktree as its cwd. When that kill reaches
+# the Herdr server before firstmate's controlled close, Herdr reaps the pane
+# and drops the workspace through its own pane-death path, clamping the active
+# workspace index to a stale value (handle_pane_died): the active
+# workspace/tab drifts, and for a projected task the journal's workspace
+# disappears before the gate below can see it, quarantining the journal.
+# Closing the exact pane here, under the presentation lock acquired in the
+# preflight above, keeps the removal on the focus-safe close plan with the
+# exact-tab restore backstop; the later reap and treehouse return then find
+# only orphaned agent processes, whose kill raises no Herdr pane event.
 HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
 HERDR_PRESENTATION_RETIRE_CANDIDATE=0
 HERDR_PRESENTATION_SESSION=
@@ -2440,15 +2426,6 @@ if [ "$BACKEND" = herdr ] \
        "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_WORKSPACE" \
        "$HERDR_PRESENTATION_JOURNAL" "$ID"; then
     HERDR_PRESENTATION_RETIRE_CANDIDATE=1
-  fi
-  if [ -n "${FM_TEARDOWN_DEBUG:-}" ]; then
-    {
-      echo "DBG retire-gate id=$ID T=$T"
-      echo "DBG meta session=$HERDR_PRESENTATION_SESSION ws=$HERDR_PRESENTATION_WORKSPACE pane=$HERDR_PRESENTATION_PANE"
-      echo "DBG journal=$HERDR_PRESENTATION_JOURNAL exists=$([ -e "$HERDR_PRESENTATION_JOURNAL" ] && echo yes || echo no)"
-      fm_backend_herdr_projection_journal_token "$HERDR_PRESENTATION_JOURNAL" "$ID" >/dev/null 2>&1 && echo "DBG token-ok" || echo "DBG token-FAIL"
-      fm_backend_herdr_projection_endpoint_matches_journal "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_WORKSPACE" "$HERDR_PRESENTATION_JOURNAL" "$ID" >/dev/null 2>&1 && echo "DBG matches-ok" || echo "DBG matches-FAIL"
-    } >&2
   fi
 fi
 
@@ -2477,6 +2454,25 @@ elif [ "$BACKEND" = herdr ]; then
     echo "warning: herdr session presentation lock path is unavailable; skipping the pane close rather than closing unlocked" >&2
   fi
 fi
+# Every landed/discard-work refusal above has now passed (or --force skipped
+# them). Fix 1 and Fix 2 (see script header) run here, unconditionally on
+# --force, and before ANY destructive step below - a still-parked run or a
+# leaked process can own live work in this exact worktree. Not for
+# kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
+# dedicated process-event and firstmate-home removal machinery further below,
+# not by task-worktree cleanup.
+if [ "$KIND" != secondmate ]; then
+  conclude_task_no_mistakes_run "$WT"
+  reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
+fi
+
+# Fix 3 (see script header): sweep remote job workers abandoned by an already
+# pruned code root. Best effort - a sweep failure never blocks this teardown.
+"$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true
+
+
+
+
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
