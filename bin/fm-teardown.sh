@@ -2441,6 +2441,15 @@ if [ "$BACKEND" = herdr ] \
        "$HERDR_PRESENTATION_JOURNAL" "$ID"; then
     HERDR_PRESENTATION_RETIRE_CANDIDATE=1
   fi
+  if [ -n "${FM_TEARDOWN_DEBUG:-}" ]; then
+    {
+      echo "DBG retire-gate id=$ID T=$T"
+      echo "DBG meta session=$HERDR_PRESENTATION_SESSION ws=$HERDR_PRESENTATION_WORKSPACE pane=$HERDR_PRESENTATION_PANE"
+      echo "DBG journal=$HERDR_PRESENTATION_JOURNAL exists=$([ -e "$HERDR_PRESENTATION_JOURNAL" ] && echo yes || echo no)"
+      fm_backend_herdr_projection_journal_token "$HERDR_PRESENTATION_JOURNAL" "$ID" >/dev/null 2>&1 && echo "DBG token-ok" || echo "DBG token-FAIL"
+      fm_backend_herdr_projection_endpoint_matches_journal "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_WORKSPACE" "$HERDR_PRESENTATION_JOURNAL" "$ID" >/dev/null 2>&1 && echo "DBG matches-ok" || echo "DBG matches-FAIL"
+    } >&2
+  fi
 fi
 
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
