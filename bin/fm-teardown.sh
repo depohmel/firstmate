@@ -2095,7 +2095,7 @@ teardown_herdr_require_prerequisites() {  # <task-id>
 }
 
 teardown_herdr_preflight_target() {  # <target> <task-id>
-  local target=$1 task_id=$2 session pane presence lock_path verified_lock_path lock_session held_path attempt
+  local target=$1 task_id=$2 session pane presence lock_path verified_lock_path lock_session held_path
   teardown_herdr_require_prerequisites "$task_id" || return 1
   if ! fm_backend_herdr_parse_target "$target"; then
     echo "error: herdr endpoint $target for $task_id could not be parsed exactly; nothing was changed - repair the endpoint metadata and rerun teardown" >&2
@@ -2128,8 +2128,13 @@ teardown_herdr_preflight_target() {  # <target> <task-id>
 $TEARDOWN_HERDR_LOCK_RECORDS
 FMEOF
   fi
-  attempt=0
-  while [ "$attempt" -lt 50 ]; do
+  # A holder keeps this lock until its whole teardown sequence finishes
+  # (controlled close, process reap, treehouse return, record removal), so
+  # bound the wait on wall-clock time rather than attempt count: concurrent
+  # projected teardowns serialize and every holder releases on completion or
+  # exit.
+  deadline=$((SECONDS + 60))
+  while [ "$SECONDS" -lt "$deadline" ]; do
     if fm_lock_try_acquire "$lock_path"; then
       if ! verified_lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") \
         || [ "$verified_lock_path" != "$lock_path" ]; then
@@ -2146,7 +2151,6 @@ $session	$lock_path"
       return 0
     fi
     sleep 0.1
-    attempt=$((attempt + 1))
   done
   echo "error: herdr session presentation lock is contended for $task_id; nothing was changed - rerun teardown once the contention clears" >&2
   return 1
