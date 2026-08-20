@@ -2578,6 +2578,13 @@ fm_backend_herdr_projection_endpoint_matches_journal() {  # <session> <workspace
   printf '%s' "$list" | jq -e '(.result.workspaces | type) == "array"' >/dev/null 2>&1 || return 1
   matches=$(printf '%s' "$list" | jq -r --arg suffix " · p:$token" \
     '.result.workspaces[]? | select((.label | type) == "string" and (.label | endswith($suffix))) | .workspace_id' 2>/dev/null)
+  if [ -n "${FM_HERDR_DEBUG:-}" ]; then
+    {
+      echo "DBG match-cli rc-ok session=$session"
+      echo "DBG match-list: $(printf '%s' "$list" | jq -c '.result.workspaces | map({workspace_id, label})' 2>/dev/null)"
+      echo "DBG match-token=$token want=$workspace_id matches=[$matches]"
+    } >&2
+  fi
   [ "$matches" = "$workspace_id" ]
 }
 
