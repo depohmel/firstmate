@@ -297,6 +297,46 @@ test_relaunch_preserves_durable_task_metadata() {
   pass "fm-control relaunch: durable task metadata survives replacement launch publication"
 }
 
+test_relaunch_represents_the_recorded_model_tier_under_an_active_profile() {
+  local dir out rc
+  dir=$(new_case tier-represent rl27)
+  add_ship_task "$dir" rl27 claude
+  # Record a consciously chosen non-default tier under an active dispatch
+  # profile - the target configuration of the model-tier guard.
+  mkdir -p "$dir/home/config"
+  sed -i "s/^model=default$/model=gpt-5/" "$dir/home/state/rl27.meta"
+  printf '%s\n' '{"rules":[{"when":"current events","use":{"harness":"claude","model":"gpt-5","effort":"high"}}]}' \
+    > "$dir/home/config/crew-dispatch.json"
+
+  out=$(run_control "$dir" rl27 relaunch --note "re-arming the recorded tier"); rc=$?
+  expect_code 0 "$rc" "a relaunch that re-presents the task's own recorded model tier should succeed under an active dispatch profile"$'\n'"$out"
+  [ "$(meta_field "$dir" rl27 model)" = "gpt-5" ] \
+    || fail "the recorded model tier must survive the relaunch rewrite"
+  [ "$(journal_field "$dir" rl27 phase)" = "complete" ] \
+    || fail "the relaunch transaction should end complete, got '$(journal_field "$dir" rl27 phase)'"
+  pass "fm-control relaunch: re-presenting the recorded model tier is not a new tier choice"
+}
+
+test_relaunch_changing_the_model_tier_under_an_active_profile_refuses() {
+  local dir out rc before
+  dir=$(new_case tier-change rl29)
+  add_ship_task "$dir" rl29 claude
+  mkdir -p "$dir/home/config"
+  sed -i "s/^model=default$/model=gpt-5/" "$dir/home/state/rl29.meta"
+  printf '%s\n' '{"rules":[{"when":"current events","use":{"harness":"claude","model":"gpt-5","effort":"high"}}]}' \
+    > "$dir/home/config/crew-dispatch.json"
+  before=$(cat "$dir/home/state/rl29.meta")
+
+  out=$(run_control "$dir" rl29 relaunch --model o3 --note "trying a new tier"); rc=$?
+  expect_code 1 "$rc" "a relaunch that CHANGES the model tier must carry a dispatch rationale or override"$'\n'"$out"
+  assert_contains "$out" "crew-dispatch.json is active" "the refusal should name the active dispatch profile"
+  [ "$(cat "$dir/home/state/rl29.meta")" = "$before" ] \
+    || fail "a tier-change launch refusal must keep the prior durable record"
+  [ "$(journal_field "$dir" rl29 phase)" = "failed:launching" ] \
+    || fail "the journal should record the failed launch phase, got '$(journal_field "$dir" rl29 phase)'"
+  pass "fm-control relaunch: changing the model tier without a rationale keeps the recorded tier"
+}
+
 test_relaunch_replaces_owned_dispatch_axes_rather_than_preserving_them() {
   local dir out rc
   dir=$(new_case dispatch-axes rl20)
@@ -1336,6 +1376,8 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_replaces_owned_dispatch_axes_rather_than_preserving_them
+test_relaunch_represents_the_recorded_model_tier_under_an_active_profile
+test_relaunch_changing_the_model_tier_under_an_active_profile_refuses
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
 test_relaunch_appends_the_progress_note_to_the_instructions

@@ -934,9 +934,23 @@ fi
 # --secondmate spawns are exempt. The script does NOT parse the natural-language
 # rules to pick a profile - that is firstmate's job - it only requires the caller
 # to have made the choice consciously via --dispatch-rationale or to have
-# bypassed with an explicitly recorded --dispatch-override.
+# bypassed with an explicitly recorded --dispatch-override. A --relaunch that
+# re-presents the task's own recorded model tier is likewise exempt: the tier was
+# already consciously chosen at spawn time and is recorded in the task's meta, so
+# relaunch re-arming it is not a new tier choice - but changing the tier on a
+# relaunch still must carry the rationale or override like any other explicit
+# --model.
+RELAUNCH_REPRESENTED_MODEL=0
+if [ "$RELAUNCH" -eq 1 ] && [ "$MODEL_SET" -eq 1 ] \
+   && [ "$KIND" != secondmate ] && [ -f "$CONFIG/crew-dispatch.json" ] \
+   && [ -f "$STATE/${POS[0]:-}.meta" ] \
+   && [ -n "$MODEL" ] \
+   && [ "$(fm_meta_get "$STATE/${POS[0]:-}.meta" model)" = "$MODEL" ]; then
+  RELAUNCH_REPRESENTED_MODEL=1
+fi
 if [ "$KIND" != secondmate ] && [ -f "$CONFIG/crew-dispatch.json" ] \
-   && [ "$MODEL_SET" -eq 1 ] && [ "$DISPATCH_RATIONALE_SET" -eq 0 ] \
+   && [ "$MODEL_SET" -eq 1 ] && [ "$RELAUNCH_REPRESENTED_MODEL" -eq 0 ] \
+   && [ "$DISPATCH_RATIONALE_SET" -eq 0 ] \
    && [ "$DISPATCH_OVERRIDE_SET" -eq 0 ]; then
   echo "error: config/crew-dispatch.json is active and --model ${MODEL} was explicitly requested, but --dispatch-rationale or --dispatch-override was not supplied" >&2
   echo "refusing to launch a crewmate whose model tier was chosen without consulting the dispatch rules" >&2
