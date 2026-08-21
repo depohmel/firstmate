@@ -284,6 +284,8 @@ YOLO_SET=0
 TRACEPARENT_SET=0
 RELAUNCH=0
 POS=()
+DISPATCH_RATIONALE_SET=0
+DISPATCH_OVERRIDE_SET=0
 want_value=
 for a in "$@"; do
   if [ -n "$want_value" ]; then
@@ -298,6 +300,8 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
+      dispatch-rationale) DISPATCH_RATIONALE=$a; DISPATCH_RATIONALE_SET=1 ;;
+      dispatch-override) DISPATCH_OVERRIDE_REASON=$a; DISPATCH_OVERRIDE_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -321,6 +325,8 @@ for a in "$@"; do
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
+    --dispatch-rationale) want_value=dispatch-rationale ;;
+    --dispatch-override) want_value=dispatch-override ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -332,6 +338,8 @@ done
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
+[ "$DISPATCH_RATIONALE_SET" -eq 0 ] || [ -n "$DISPATCH_RATIONALE" ] || { echo "error: --dispatch-rationale requires a non-empty value" >&2; exit 1; }
+[ "$DISPATCH_OVERRIDE_SET" -eq 0 ] || [ -n "$DISPATCH_OVERRIDE_REASON" ] || { echo "error: --dispatch-override requires a non-empty value" >&2; exit 1; }
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
 # Nothing else may reach the pane's TRACEPARENT export.
@@ -2684,7 +2692,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen dispatch_rationale dispatch_override spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2703,6 +2711,14 @@ preserve_relaunch_meta() {
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
+  # Dispatch rationale: why a model tier was chosen when crew-dispatch.json is
+  # active. Recorded only when the dispatch profile is present so a later session
+  # can see WHY the tier was selected instead of re-deriving it. Newlines are
+  # collapsed to keep the meta line-structured.
+  if [ -f "$CONFIG/crew-dispatch.json" ]; then
+    [ -z "${DISPATCH_RATIONALE:-}" ] || printf 'dispatch_rationale=%s\n' "${DISPATCH_RATIONALE//$'\n'/ }"
+    [ -z "${DISPATCH_OVERRIDE_REASON:-}" ] || printf 'dispatch_override=%s\n' "${DISPATCH_OVERRIDE_REASON//$'\n'/ }"
+  fi
   echo "spawn_gen=$SPAWN_GEN"
   # Default-off writes no traceparent= line.
   # backend= is written only for a non-default (non-tmux) backend, so the
