@@ -297,6 +297,27 @@ test_relaunch_preserves_durable_task_metadata() {
   pass "fm-control relaunch: durable task metadata survives replacement launch publication"
 }
 
+test_relaunch_replaces_owned_dispatch_axes_rather_than_preserving_them() {
+  local dir out rc
+  dir=$(new_case dispatch-axes rl20)
+  add_ship_task "$dir" rl20 claude
+  {
+    printf '%s\n' 'dispatch_rationale=trivial mechanical edit matches rule 2'
+    printf '%s\n' 'dispatch_override=consciously choosing the recorded tier'
+    printf '%s\n' 'pr=https://github.com/example/repo/pull/20'
+  } >> "$dir/home/state/rl20.meta"
+
+  out=$(run_control "$dir" rl20 relaunch --note "replacing the agent"); rc=$?
+  expect_code 0 "$rc" "a relaunch without re-presenting the dispatch axes should succeed"$'\n'"$out"
+  [ "$(grep -c '^dispatch_rationale=' "$dir/home/state/rl20.meta")" -eq 0 ] \
+    || fail "the owned dispatch_rationale axis must be replaced by the rewrite, not preserved"
+  [ "$(grep -c '^dispatch_override=' "$dir/home/state/rl20.meta")" -eq 0 ] \
+    || fail "the owned dispatch_override axis must be replaced by the rewrite, not preserved"
+  [ "$(meta_field "$dir" rl20 pr)" = "https://github.com/example/repo/pull/20" ] \
+    || fail "foreign durable metadata must survive relaunch"
+  pass "fm-control relaunch: owned dispatch axes are replaced, foreign metadata survives"
+}
+
 test_relaunch_serializes_concurrent_durable_metadata_publication() {
   local dir control_pid link_pid rc i=0 traceparent prepare ready exported release
   dir=$(new_case metadata-race rl28)
@@ -1314,6 +1335,7 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
+test_relaunch_replaces_owned_dispatch_axes_rather_than_preserving_them
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
 test_relaunch_appends_the_progress_note_to_the_instructions
