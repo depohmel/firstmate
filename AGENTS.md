@@ -567,3 +567,22 @@ Keep this file for knowledge useful to almost every future agent session in this
 Do not repeat what the codebase already shows; point to the authoritative file, skill, command, or doc.
 Prefer rewriting or pruning existing entries over appending new ones.
 When updating this file, preserve every safety boundary and keep the always-loaded contract concise.
+
+---
+
+## HARD RULE: PR Readiness Check (permanent, 2026-08-18)
+
+The reviewer (sovereign-codereviewer) posts COMMENTS, not formal reviews. A "clean" PR has:
+1. "PR Reviewer Guide" comment with "No major issues detected" AND "No security concerns identified"
+2. "PR Code Suggestions" comment with "No code suggestions found for the PR."
+3. NO formal review entry in /pulls/<n>/reviews
+
+READINESS = green CI + no conflicts + Reviewer Guide says "No major issues" + Suggestions says "none"
+
+**NEVER assume reviews:NONE means unreviewed.** Read the comment bodies.
+
+**NEVER merge without checking comments.** A PR with reviews:NONE might have clean comments OR might have findings. Only reading the comments tells you.
+
+**NEVER trust the formal review state.** The reviewer's approve branch does not produce a visible approved review - only the clean COMMENTS are the signal.
+
+Source: data/captain.md, data/learnings.md
