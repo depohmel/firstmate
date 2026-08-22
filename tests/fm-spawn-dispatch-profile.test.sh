@@ -910,6 +910,48 @@ test_dispatch_profile_absent_needs_no_rationale() {
     "no-dispatch spawn did not thread model and effort"
   pass "absent crew-dispatch.json needs no rationale; --dispatch-rationale is a no-op"
 }
+test_dispatch_profile_collapses_newlines_in_recorded_meta() {
+  local rec id out status
+  id=profile-collapse-z24
+  rec=$(make_spawn_case profile-collapse codex "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort high \
+      --dispatch-rationale $'trivial mechanical edit\nmatches rule 2' \
+      --dispatch-override $'consciously choosing\ncodex/gpt-5 for this task')
+  status=$?
+  expect_code 0 "$status" "a multi-line dispatch decision should still permit the spawn"
+  assert_contains "$out" "spawned $id harness=codex" "spawn did not report codex"
+  assert_grep "dispatch_rationale=trivial mechanical edit matches rule 2" \
+    "$HOME_DIR/state/$id.meta" "meta did not record the collapsed single-line rationale"
+  assert_grep "dispatch_override=consciously choosing codex/gpt-5 for this task" \
+    "$HOME_DIR/state/$id.meta" "meta did not record the collapsed single-line override"
+  [ "$(grep -c '^dispatch_rationale=' "$HOME_DIR/state/$id.meta")" -eq 1 ] \
+    || fail "a multi-line rationale must not leave an orphan continuation line in meta"
+  [ "$(grep -c '^dispatch_override=' "$HOME_DIR/state/$id.meta")" -eq 1 ] \
+    || fail "a multi-line override must not leave an orphan continuation line in meta"
+  pass "active crew-dispatch profile collapses newlines so the meta stays line-structured"
+}
+
+test_dispatch_profile_refuses_empty_rationale_before_meta() {
+  local rec id out status
+  id=profile-empty-rationale-z25
+  rec=$(make_spawn_case profile-empty-rationale codex "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort high \
+      --dispatch-rationale "")
+  status=$?
+  expect_code 1 "$status" "an empty --dispatch-rationale should be refused"
+  assert_contains "$out" "--dispatch-rationale requires a non-empty value" \
+    "refusal did not name the empty-value rule"
+  assert_absent "$HOME_DIR/state/$id.meta" "refusal should happen before meta is written"
+  pass "parser refuses an empty --dispatch-rationale value before any record is written"
+}
 test_no_profile_keeps_claude_profile_defaults
 test_non_cursor_launch_clears_inherited_cursor_markers
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
@@ -945,5 +987,7 @@ test_dispatch_profile_requires_rationale_when_model_explicit
 test_dispatch_profile_rationale_allows_explicit_model_spawn
 test_dispatch_profile_override_spawns_and_records_reason
 test_dispatch_profile_absent_needs_no_rationale
+test_dispatch_profile_collapses_newlines_in_recorded_meta
+test_dispatch_profile_refuses_empty_rationale_before_meta
 
 echo "# all fm-spawn-dispatch-profile tests passed"
