@@ -326,7 +326,9 @@ for a in "$@"; do
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
     --dispatch-rationale) want_value=dispatch-rationale ;;
+    --dispatch-rationale=*) DISPATCH_RATIONALE=${a#--dispatch-rationale=}; DISPATCH_RATIONALE_SET=1 ;;
     --dispatch-override) want_value=dispatch-override ;;
+    --dispatch-override=*) DISPATCH_OVERRIDE_REASON=${a#--dispatch-override=}; DISPATCH_OVERRIDE_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
