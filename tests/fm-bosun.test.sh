@@ -1032,6 +1032,193 @@ test_idle_fleet_silent_when_busy() {
   pass "busy fleet + ready work stays silent"
 }
 
+# --- Tests: parked conditions (captain-held re-alarm suppression) ---------
+#
+# The bosun idle checks must not re-alarm a condition that is already parked
+# with the captain: a declared paused: status, an armed merge poll against
+# the recorded pr=, or an open captain decision hold covering the subject.
+# Once the park condition clears, the checks alarm again from first sight.
+
+# write_armed_poll <home> <id> <pr-url>: write the on-disk shape that
+# bin/fm-pr-check.sh leaves when a merge poll is armed - the 11-line
+# transactional registration (URL on line 4) plus its validated sidecar -
+# and record pr= in the task meta.
+write_armed_poll() {  # <home> <id> <pr-url>
+  local home=$1 id=$2 url=$3
+  local reg="$home/state/$id.pr-poll-registration"
+  printf '%s\n' \
+    "fm-pr-poll-registration-v2" "$id" "github" "$url" "github.com" \
+    "depohmel/famclaw/pulls" "4" \
+    "0000000000000000000000000000000000000000000000000000000000000000" \
+    "0000000000000000000000000000000000000000000000000000000000000000" \
+    "1:1" "1:1" > "$reg"
+  printf '%s\n' "github" "$url" "github.com" "depohmel/famclaw/pulls" "4" \
+    > "$home/state/$id.pr-poll"
+  printf 'pr=%s\n' "$url" >> "$home/state/$id.meta"
+}
+
+# add_captain_decision_hold <home> <origin-id> <key> [repo]: add a tasks-axi
+# item named <origin-id>-decision-<key> (the fm-decision-hold identity
+# contract) and place it on captain hold. Prints the hold id.
+add_captain_decision_hold() {  # <home> <origin-id> <key> [repo]
+  local home=$1 origin=$2 key=$3 repo=${4:-}
+  local hold_id="${origin}-decision-${key}"
+  setup_backlog_config "$home"
+  if [ -n "$repo" ]; then
+    (cd "$home" && tasks-axi add "$hold_id" "Decision: $key" --repo "$repo" \
+      --kind captain \
+      >/dev/null 2>&1)
+  else
+    (cd "$home" && tasks-axi add "$hold_id" "Decision: $key" --kind captain \
+      >/dev/null 2>&1)
+  fi
+  (cd "$home" && tasks-axi hold "$hold_id" --reason "captain decision pending" \
+    --kind captain >/dev/null 2>&1)
+  printf '%s\n' "$hold_id"
+}
+
+# drop_captain_decision_hold <home> <hold-id>: answer the hold so the item
+# is no longer an open captain decision hold.
+drop_captain_decision_hold() {  # <home> <hold-id>
+  local home=$1 id=$2
+  (cd "$home" && tasks-axi "done" "$id" >/dev/null 2>&1)
+}
+
+test_no_progress_crew_suppressed_by_armed_poll() {
+  local home repo worktree id log
+  home=$(make_home no-progress-parked-poll)
+  repo="$TMP_ROOT/repo-noprog-poll"
+  worktree="$TMP_ROOT/wt-noprog-poll"
+
+  make_stale_worktree "$repo" "$worktree" feat-noprog-poll 7200
+
+  id=test-noprog-poll
+  fm_write_meta "$home/state/$id.meta" \
+    "worktree=$worktree" "project=$repo" "kind=ship"
+  printf 'working: waiting for CI\n' > "$home/state/$id.status"
+  write_fake_gh "$home" "abc1234" "2026-08-20T00:00:00Z" "2026-08-21T00:00:00Z" "0"
+  write_armed_poll "$home" "$id" "https://github.com/depohmel/famclaw/pull/4"
+
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_no_grep "no-progress:$id:WOULD-escalate" "$log" \
+    "an armed merge poll must suppress the no-progress re-alarm"
+  assert_grep "no-progress:$id:suppressed:parked" "$log" \
+    "the suppression must be logged"
+
+  # With the park condition gone, the same idle crew alarms again.
+  rm -f "$home/state/$id.pr-poll-registration" "$home/state/$id.pr-poll" "$log"
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_grep "no-progress:$id:WOULD-escalate" "$log" \
+    "no-progress must alarm again once the armed poll is retired"
+  pass "no-progress crew suppressed by armed merge poll"
+}
+
+test_no_progress_crew_suppressed_by_paused_status() {
+  local home repo worktree id log
+  home=$(make_home no-progress-parked-paused)
+  repo="$TMP_ROOT/repo-noprog-paused"
+  worktree="$TMP_ROOT/wt-noprog-paused"
+
+  make_stale_worktree "$repo" "$worktree" feat-noprog-paused 7200
+
+  id=test-noprog-paused
+  fm_write_meta "$home/state/$id.meta" \
+    "worktree=$worktree" "project=$repo" "kind=ship"
+  stale_axi_status > "$home/nm-fixtures/axi_status"
+  write_fake_nm "$home"
+  printf 'paused: awaiting merge of PR 4\n' > "$home/state/$id.status"
+
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_no_grep "no-progress:$id:WOULD-escalate" "$log" \
+    "a declared paused status must suppress the no-progress re-alarm"
+  assert_no_grep "stalled:$id:WOULD-escalate" "$log" \
+    "a declared paused status must suppress the stalled run-step re-alarm"
+  assert_grep "no-progress:$id:suppressed:parked" "$log" \
+    "the no-progress suppression must be logged"
+  assert_grep "stalled:$id:suppressed:parked" "$log" \
+    "the stalled run-step suppression must be logged"
+
+  # With the pause dropped, both checks alarm again from first sight.
+  printf 'working: resumed\n' >> "$home/state/$id.status"
+  rm -f "$log"
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_grep "no-progress:$id:WOULD-escalate" "$log" \
+    "no-progress must alarm again once the pause is dropped"
+  assert_grep "stalled:$id:WOULD-escalate" "$log" \
+    "the stalled run-step must alarm again once the pause is dropped"
+  pass "paused status suppresses no-progress and stalled re-alarms"
+}
+
+test_parked_work_suppressed_by_captain_hold() {
+  local home hold_id id log
+  home=$(make_home parked-work-hold)
+
+  id=test-parked-hold
+  fm_write_meta "$home/state/$id.meta" "kind=ship"
+  printf 'needs-decision: merge PR when green\n' > "$home/state/$id.status"
+  hold_id=$(add_captain_decision_hold "$home" "$id" "merge")
+
+  # Condition first detected long ago and already escalated once; while the
+  # hold is open the bosun must not re-alarm.
+  mkdir -p "$home/state/.bosun-state"
+  touch -d '2 hours ago' "$home/state/.bosun-state/$id.parked-since"
+  touch -d '2 hours ago' "$home/state/.bosun-state/$id.esc-last"
+
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_grep "parked:$id:suppressed:parked" "$log" \
+    "an open captain hold must suppress the parked-work re-alarm"
+  assert_no_grep "parked:$id:WOULD-escalate" "$log" \
+    "no parked-work escalation while the hold is open"
+  assert_absent "$home/state/.bosun-state/$id.parked-since" \
+    "detection must reset while the hold is open"
+
+  # With the hold answered, the long-parked condition alarms again.
+  drop_captain_decision_hold "$home" "$hold_id"
+  touch -d '2 hours ago' "$home/state/.bosun-state/$id.parked-since"
+  touch -d '2 hours ago' "$home/state/.bosun-state/$id.esc-last"
+  rm -f "$log"
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_grep "parked:$id:WOULD-escalate" "$log" \
+    "parked work must alarm again once the hold is answered"
+  pass "parked work suppressed by open captain hold"
+}
+
+test_deploy_drift_suppressed_by_captain_hold() {
+  local home hold_id log
+  home=$(make_home deploy-drift-held)
+  mkdir -p "$home/config"
+  printf 'famclaw\thomelab\t/opt/famclaw\t\t\n' > "$home/config/deploy-targets.tsv"
+
+  # Fake ssh: homelab's checkout is 3 merged commits behind, nothing running.
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "OK|3|0|none|0"' > "$home/fakebin/ssh"
+  chmod +x "$home/fakebin/ssh"
+
+  hold_id=$(add_captain_decision_hold "$home" "famclaw" "mac-deploy" "famclaw")
+
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_no_grep "deploy-drift:WOULD-escalate" "$log" \
+    "an open captain hold must suppress the deploy-drift re-alarm"
+  assert_grep "deploy-drift:famclaw:suppressed:captain-hold" "$log" \
+    "the deploy-drift suppression must be logged"
+
+  # With the hold answered, the same drift alarms again.
+  drop_captain_decision_hold "$home" "$hold_id"
+  rm -f "$log"
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_grep "deploy-drift:WOULD-escalate" "$log" \
+    "deploy drift must alarm again once the hold is answered"
+  assert_grep "NOT PULLED" "$log" "the drift detail must still alarm"
+  pass "deploy drift suppressed by open captain hold"
+}
+
 # --- Run all tests ---
 
 test_no_progress_crew_detected
@@ -1061,3 +1248,7 @@ test_idle_fleet_fires_with_ready_work
 test_idle_fleet_silent_without_ready_work
 test_idle_fleet_silent_when_all_held
 test_idle_fleet_silent_when_busy
+test_no_progress_crew_suppressed_by_armed_poll
+test_no_progress_crew_suppressed_by_paused_status
+test_parked_work_suppressed_by_captain_hold
+test_deploy_drift_suppressed_by_captain_hold

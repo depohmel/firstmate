@@ -36,11 +36,19 @@ check can fail (i.e. produce a negative verdict); a predicate that can never say
    queue. Re-escalation backs off exponentially from
    `FM_BOSUN_PARKED_BACKOFF_BASE` (default 600) up to
    `FM_BOSUN_PARKED_BACKOFF_MAX` (default 86400) until the status clears.
+   While the task is parked with the captain - an armed merge poll against its
+   recorded `pr=` or an open captain decision hold covering the task
+   (`bin/fm-park-state-lib.sh`) - the re-alarm is suppressed and detection
+   resets, so the condition alarms from first sight once the park clears.
 
 5. **Deploy drift** — Shells out to `bin/fm-deploy-drift.sh` (if present) and
    surfaces any output through the same escalation path. The script reads
    `config/deploy-targets.tsv`; a documented example is shipped at
    [docs/examples/deploy-targets.tsv](examples/deploy-targets.tsv).
+   A drift line whose project is covered by an open captain decision hold
+   (the hold's repo, identity, or title names the project) is suppressed with
+   a `deploy-drift:<proj>:suppressed:captain-hold` log; any uncovered line
+   still alarms, and an unreadable hold list suppresses nothing.
 
 6. **Stale teardown** — A task whose PR is merged but whose worktree still
    exists is recorded for firstmate; **the bosun never tears down a worktree**.
@@ -49,11 +57,19 @@ check can fail (i.e. produce a negative verdict); a predicate that can never say
    whose `last_activity` is older than `FM_BOSUN_STALL_SECS` (default 1800),
    or which has an empty `agent_pid`, is escalated. Uses `no-mistakes axi
    status` to read the `active_steps` table.
+   Suppressed while the task is parked with the captain (declared `paused:`
+   status, armed merge poll against the recorded `pr=`, or open captain
+   decision hold - `bin/fm-park-state-lib.sh`); the rate marker is cleared so
+   the step alarms at first sight once the park clears.
 
 8. **No-progress crew** — A crew whose worktree has had no file modification
    (excluding `.git`) and no new commit for longer than
    `FM_BOSUN_NPROGRESS_SECS` (default 1800), while the crew is still busy
    (running step or non-terminal status), is escalated.
+   Suppressed while the task is parked with the captain (declared `paused:`
+   status, armed merge poll against the recorded `pr=`, or open captain
+   decision hold - `bin/fm-park-state-lib.sh`); the rate marker is cleared so
+   the crew alarms at first sight once the park clears.
 
 9. **Inflight sibling conflicts** — When a task's PR is merged, every other
    open PR in that repo was validated against the old base and may now be
