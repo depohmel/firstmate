@@ -47,6 +47,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-park-state-lib.sh
+. "$SCRIPT_DIR/fm-park-state-lib.sh"
 
 BOSUN_LOCK="$STATE/.bosun.lock"
 BOSUN_LOG="$STATE/.bosun.log"
@@ -300,8 +302,8 @@ check_unpushed_commits() {  # <id> <meta>
     bosun_log "unpushed:$id:age=${age}s threshold=$FM_BOSUN_PUSH_AGE_SECS ahead=$ahead waiting"
   fi
 }
-check_parked_work() {  # <id>
-  local id=$1 last_line verb since_age backoff esc_count
+check_parked_work() {  # <id> <meta>
+  local id=$1 meta=$2 last_line verb since_age backoff esc_count
 
   last_line=$(last_status_line "$STATE/$id.status") || last_line=""
   [ -n "$last_line" ] || { _clear_parked_state "$id"; return 0; }
@@ -311,6 +313,16 @@ check_parked_work() {  # <id>
     blocked|needs-decision) ;;
     *) _clear_parked_state "$id"; return 0 ;;
   esac
+
+  # Parked with the captain: an armed merge poll against the recorded pr= or
+  # an open captain decision hold makes this idle state an expected external
+  # wait. Suppress the re-alarm and reset detection so the condition alarms
+  # from first sight once the park condition clears.
+  if task_is_parked "$STATE" "$id" "$meta" "$FM_HOME"; then
+    bosun_log "parked:$id:suppressed:parked"
+    _clear_parked_state "$id"
+    return 0
+  fi
 
   # First detection: record and wait for the initial threshold
   if [ ! -e "$BOSUN_STATE_DIR/$id.parked-since" ]; then
@@ -365,16 +377,41 @@ check_deploy_drift() {
 
   local output
   output=$("$SCRIPT_DIR/fm-deploy-drift.sh" 2>&1)
-  if [ -n "$output" ]; then
-    if [ "$FM_BOSUN_DRY_RUN" = 1 ]; then
-      bosun_log "deploy-drift:WOULD-escalate:$output"
-    else
-      fm_wake_append "stale" "deploy-drift" \
-        "BOSUN-ESCALATION: deploy drift: $output" 2>/dev/null || true
-      bosun_log "deploy-drift:escalated:$output"
+  [ -n "$output" ] || { bosun_log "deploy-drift:ok:no-drift"; return 0; }
+
+  # A drift line whose project is covered by an open captain decision hold is
+  # parked with the captain: acting on it (e.g. restarting a live deploy) is
+  # held, so its re-alarm is noise. Any line not covered by a hold still
+  # alarms; when the hold list is unreadable nothing is suppressed.
+  local line proj alarm=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    proj=""
+    case "$line" in
+      "DEPLOY_DRIFT:"*)
+        proj=${line#"DEPLOY_DRIFT: "}
+        proj=${proj%%:*}
+        proj=${proj//[[:space:]]/}
+        ;;
+    esac
+    if [ -n "$proj" ] && project_has_open_captain_hold "$FM_HOME" "$proj"; then
+      bosun_log "deploy-drift:$proj:suppressed:captain-hold"
+      continue
     fi
+    alarm="${alarm}${line}"$'\n'
+  done <<< "$output"
+
+  if [ -z "$alarm" ]; then
+    bosun_log "deploy-drift:ok:all-held"
+    return 0
+  fi
+  alarm=${alarm%$'\n'}
+  if [ "$FM_BOSUN_DRY_RUN" = 1 ]; then
+    bosun_log "deploy-drift:WOULD-escalate:$alarm"
   else
-    bosun_log "deploy-drift:ok:no-drift"
+    fm_wake_append "stale" "deploy-drift" \
+      "BOSUN-ESCALATION: deploy drift: $alarm" 2>/dev/null || true
+    bosun_log "deploy-drift:escalated:$alarm"
   fi
 }
 check_stale_teardown() {  # <id> <meta>
@@ -595,6 +632,16 @@ check_stalled_runstep() {  # <id> <meta>
   status="$NM_AXI_STATUS"
   [ "$status" = running ] || return 0
 
+  # Parked with the captain (declared pause, armed merge poll, or open
+  # decision hold): the quiet run-step is an expected external wait, not a
+  # stall. Clear the rate marker so the step alarms at first sight once the
+  # park condition clears.
+  if task_is_parked "$STATE" "$id" "$meta" "$FM_HOME"; then
+    bosun_log "stalled:$id:suppressed:parked"
+    rm -f "$BOSUN_STATE_DIR/$id.stalled" 2>/dev/null || true
+    return 0
+  fi
+
   local step fstatus active_for last_activity pid dur secs
   # shellcheck disable=SC2034  # active_for is read to advance fields, not used
   while IFS='|' read -r step fstatus active_for last_activity pid; do
@@ -696,6 +743,15 @@ check_no_progress_crew() {  # <id> <meta>
   fi
 
   if [ "$newest_age" -ge "$FM_BOSUN_NPROGRESS_SECS" ]; then
+    # Parked with the captain (declared pause, armed merge poll, or open
+    # decision hold): the idle worktree is an expected external wait, not a
+    # dead crew. Clear the rate marker so the crew alarms at first sight
+    # once the park condition clears.
+    if task_is_parked "$STATE" "$id" "$meta" "$FM_HOME"; then
+      bosun_log "no-progress:$id:suppressed:parked age=${newest_age}s"
+      rm -f "$BOSUN_STATE_DIR/$id.no-progress" 2>/dev/null || true
+      return 0
+    fi
     _escalate_no_progress "$id" "no-change-for=${newest_age}s threshold=$FM_BOSUN_NPROGRESS_SECS"
   fi
 }
@@ -805,7 +861,7 @@ main() {
     check_pr_readiness "$id" "$meta"
     check_uncommitted_work "$id" "$meta"
     check_unpushed_commits "$id" "$meta"
-    check_parked_work "$id"
+    check_parked_work "$id" "$meta"
     check_stale_teardown "$id" "$meta"
     check_inflight_conflicts "$id" "$meta"
     check_stalled_runstep "$id" "$meta"
