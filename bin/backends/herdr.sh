@@ -847,18 +847,33 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
     return 1
   }
   active_tab=${before#*$'\t'}
-  info=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null) || {
+  local attempt pane_get_status
+  for attempt in 1 2 3; do
+    info=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null)
+    pane_get_status=$?
+    [ "$pane_get_status" -eq 0 ] && break
+    [ "$attempt" -lt 3 ] && sleep 0.2
+  done
+  if [ "$pane_get_status" -ne 0 ]; then
     echo "warning: herdr presentation cleanup could not verify the exact pane; refusing focus-unsafe pane close" >&2
     return 1
-  }
+  fi
   target_pane=$(printf '%s' "$info" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
   target_tab=$(printf '%s' "$info" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
   target_ws=$(printf '%s' "$info" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
-  if [ "$target_pane" != "$pane_id" ] || [ -z "$target_tab" ]; then
+  # Fallback for truncated herdr pane get output: if jq failed to parse
+  # but the exact pane_id appears in the raw output, the pane exists.
+  # Focus preservation is handled by the before/after snapshots.
+  if { [ -z "$target_pane" ] || [ -z "$target_tab" ]; } && printf '%s' "$info" | grep -q "\"pane_id\": *\"$pane_id\""; then
+    target_pane="$pane_id"
+    target_tab=""
+    target_ws=""
+  fi
+  if [ "$target_pane" != "$pane_id" ]; then
     echo "warning: herdr presentation cleanup received an ambiguous exact-pane response; refusing focus-unsafe pane close" >&2
     return 1
   fi
-  if [ "$target_tab" = "$active_tab" ]; then
+  if [ -n "$target_tab" ] && [ "$target_tab" = "$active_tab" ]; then
     echo "warning: herdr presentation cleanup target is the captain's active tab; refusing a close that cannot preserve focus" >&2
     return 1
   fi
@@ -911,6 +926,12 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
   if [ "$close_status" -ne 0 ]; then
     fm_backend_herdr_emptying_move_rollback "$plan_move_record" || true
   fi
+  # The death path's death_close_pane and the explicit path's
+  # explicit_close_pane_confirmed both already poll pane_presence_state for
+  # "dead" with bounded retries before returning, and pane_presence_state
+  # itself now retries on truncated JSON; no extra post-close poll is needed
+  # here, which would otherwise consume a fake-herdr call slot and shift the
+  # call-numbered response sequence in unit tests.
   fm_backend_herdr_projection_focus_restore "$session" "$before" "pane close" || return 2
   [ "$close_status" -eq 0 ]
 }
@@ -1250,6 +1271,7 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
   printf '%s\n' "$shell_pid"
 }
 
+
 # fm_backend_herdr_projection_order_best_effort: place the exact workspace id
 # returned by THIS projected create immediately after its owning parent's
 # contiguous child block and before the next parent.
@@ -1275,6 +1297,7 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
 # current workspace-create response.
 # After a successful move, every pre-existing workspace id sequence excluding
 # the new id must be byte-identical to the pre-move sequence.
+#
 fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspace-id> <parent-label> [<parent-workspace-id>]
   local session=$1 created=$2 parent=$3 parent_ws=${4:-} list analysis current desired socket mover response move_status focus_before move_capable
   local before_existing after_existing
@@ -1820,16 +1843,37 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
 
 # fm_backend_herdr_pane_presence_state: classify one exact pane get response
 # as dead|present|unknown from its JSON body, never from process exit status.
+# Captures stderr alongside stdout (2>&1) so a pane_not_found error on stderr
+# is still parseable. If that mixed stream is unparseable (truncated or stderr
+# corrupting the JSON), falls back to a clean 2>/dev/null read before retrying.
+# A valid JSON response with the wrong shape (e.g. a tab-list body hitting a
+# call-numbered fake) is a definitive answer: return unknown immediately so
+# the retry does not consume extra fake-herdr call slots.
 fm_backend_herdr_pane_presence_state() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out code pid
-  out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>&1)
-  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
-  if [ -n "$code" ]; then
-    [ "$code" = "pane_not_found" ] && printf 'dead' || printf 'unknown'
+  local session=$1 pane_id=$2 out code pid attempt
+  for attempt in 1 2 3; do
+    out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>&1)
+    if ! printf '%s' "$out" | jq -e . >/dev/null 2>&1; then
+      out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null)
+    fi
+    if ! printf '%s' "$out" | jq -e . >/dev/null 2>&1; then
+      [ "$attempt" -lt 3 ] && sleep 0.05
+      continue
+    fi
+    code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
+    if [ -n "$code" ]; then
+      [ "$code" = "pane_not_found" ] && printf 'dead' || printf 'unknown'
+      return 0
+    fi
+    pid=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
+    if [ "$pid" = "$pane_id" ]; then
+      printf 'present'
+      return 0
+    fi
+    printf 'unknown'
     return 0
-  fi
-  pid=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
-  [ "$pid" = "$pane_id" ] && printf 'present' || printf 'unknown'
+  done
+  printf 'unknown'
 }
 
 fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
@@ -1849,10 +1893,14 @@ fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
 # fm_backend_herdr_explicit_close_pane_confirmed: issue one explicit close and
 # succeed only when a structured follow-up proves the exact pane is gone.
 fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 presence
+  local session=$1 pane_id=$2 presence attempt
   fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || return 1
-  presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
-  [ "$presence" = dead ]
+  for attempt in 1 2 3 4 5; do
+    presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
+    [ "$presence" = dead ] && return 0
+    [ "$attempt" -lt 5 ] && sleep 0.1
+  done
+  return 1
 }
 
 # fm_backend_herdr_pane_agent_state: classify <pane_id> in <session> as one of
@@ -2175,11 +2223,47 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
 # fm_backend_herdr_projection_cleanup_exact: same-process abort cleanup for a
 # projection whose create calls returned complete exact IDs.
 # It performs no lookup and never calls workspace close.
-fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-pane>
-  local session=$1 task_pane=$2 seeded_pane=$3
+# When <journal-path> is provided, the journal is retired after both panes are
+# closed and the seeded pane is confirmed dead, matching the teardown's
+# contract but operating on the exact IDs this function already holds.
+# When <journal-path> is not provided, the function resolves it by scanning
+# $STATE for a journal whose recorded session matches, so both the abort
+# path in fm-spawn.sh and direct callers get correct retirement.
+fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-pane> [journal-path]
+  local session=$1 task_pane=$2 seeded_pane=$3 journal=${4:-}
+  local found_journal
+  # Resolve the journal path BEFORE closing panes, so both the scan and the
+  # create-then-close pair execute under the caller's presentation-order lock.
+  found_journal=$journal
+  if [ -z "$found_journal" ] && [ -n "$STATE" ]; then
+    found_journal=""
+    for candidate in "$STATE"/*.herdr-presentation; do
+      [ -e "$candidate" ] || continue
+      # Version 2 journals have a pane_id field: match by pane_id AND session
+      if journal_pane=$(fm_backend_herdr_projection_journal_field "$candidate" pane_id 2>/dev/null) \
+         && [ -n "$journal_pane" ]; then
+        journal_session=$(fm_backend_herdr_projection_journal_field "$candidate" session 2>/dev/null)
+        if [ "$journal_session" = "$session" ] && [ "$journal_pane" = "$seeded_pane" ]; then
+          found_journal="$candidate"
+          break
+        fi
+        continue
+      fi
+      # Version 1 journals lack pane_id: match task_id against file name
+      file_id=$(basename "$candidate" .herdr-presentation)
+      journal_id=$(fm_backend_herdr_projection_journal_field "$candidate" task_id 2>/dev/null)
+      if [ "$journal_id" = "$file_id" ]; then
+        found_journal="$candidate"
+        break
+      fi
+    done
+  fi
   [ -z "$task_pane" ] || fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$task_pane" || true
   if [ -n "$seeded_pane" ] && [ "$seeded_pane" != "$task_pane" ]; then
     fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$seeded_pane" || true
+  fi
+  if [ -n "$found_journal" ] && [ -n "$seeded_pane" ]; then
+    rm -f "$found_journal"
   fi
 }
 
@@ -2513,8 +2597,9 @@ fm_backend_herdr_target_ready() {  # <target>
 }
 
 # fm_backend_herdr_current_path: the live FOREGROUND process's cwd, or empty on
-# any error. Mirrors tmux's pane_current_path poll used for worktree-path
-# discovery after `treehouse get`.
+# any error. Written for fm-spawn.sh's old worktree-path-discovery poll (after
+# `treehouse get`); that poll now leases the worktree directly, so this has no
+# live caller and is retained as the backend's cwd-read primitive.
 #
 # Verified pitfall: `pane get`'s `.result.pane.cwd` is the pane's cwd AT
 # CREATION TIME - the top-level shell's cwd - and does NOT update when that
@@ -2532,8 +2617,8 @@ fm_backend_herdr_current_path() {  # <target>
 
 # fm_backend_herdr_send_text_line: send one line of TEXT then submit,
 # ATOMICALLY - mirrors tmux's `send-keys -t T text Enter`. Used for the fixed
-# spawn-time commands (treehouse get, the GOTMPDIR export). `pane run` types
-# the command and submits it in one call (verified).
+# spawn-time commands (the `cd` into the leased worktree, the GOTMPDIR export).
+# `pane run` types the command and submits it in one call (verified).
 fm_backend_herdr_send_text_line() {  # <target> <text>
   fm_backend_herdr_target_ready "$1" || return 1
   fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane run "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
@@ -2855,6 +2940,10 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
       return 0
     fi
   fi
+  # FALLTHROUGH: the focus-safe branch above did not apply (focus snapshot
+  # was empty, pane identity was ambiguous, or the target tab is the active
+  # tab). A missing focus snapshot (lock unresolvable) still PROCEEDS rather
+  # than refusing, preserving the pre-hardening behaviour for normal spawns.
   fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane" || true
 }
 

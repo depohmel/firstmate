@@ -730,6 +730,8 @@ fm_lock_try_acquire() {
   FM_LOCK_RECOVERED_PID=
 
   if fm_lock_try_create "$lockdir"; then
+    # shellcheck disable=SC2034 # Read by callers after fm_lock_try_acquire returns.
+    FM_LOCK_HELD_PID=${BASHPID:-$$}
     return 0
   fi
 

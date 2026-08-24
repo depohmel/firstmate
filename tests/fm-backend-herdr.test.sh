@@ -1264,6 +1264,8 @@ test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane() {
       . "$0/bin/backends/herdr.sh"
       fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }
       fm_backend_herdr_projection_focus_restore() { return 0; }
+      # The presentation session lock cannot be resolved in this fake-herdr
+      # environment (no real socket): the function proceeds without the lock.
       token=$(fm_backend_herdr_projection_journal_create "$1" task-p2) || exit 1
       label=$(fm_backend_herdr_projection_workspace_label task-p2 "$token")
       fm_backend_herdr_projection_create_task /tmp/proj "$label" fm-task-p2 || exit 1

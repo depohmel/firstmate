@@ -141,7 +141,9 @@ if [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$ACTIVE_SEEDED_CONTROL" ] \
   refusal_before=$(focus_snapshot || printf ambiguous/ambiguous)
 fi
 before=
-[ -z "$mutation" ] || before=$(focus_snapshot || printf ambiguous/ambiguous)
+if [ -n "$mutation" ] || [ "${1:-} ${2:-}" = "pane get" ]; then
+  before=$(focus_snapshot || printf ambiguous/ambiguous)
+fi
 if out=$(env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"); then
   status=0
 else
@@ -179,9 +181,19 @@ if [ "$status" -eq 0 ] && [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$POST_CREATE
   for task_dir in "$POST_CREATE_ABORT_CONTROL"/abort-*; do
     [ -d "$task_dir" ] || continue
     [ "${3:-}" = "$(cat "$task_dir/task-pane" 2>/dev/null || true)" ] || continue
-    out=$(printf '%s' "$out" | jq --arg cwd "$POST_CREATE_ABORT_CONTROL/not-a-worktree" '.result.pane.foreground_cwd = $cwd')
+    new_out=$(printf '%s' "$out" | jq --arg cwd "$POST_CREATE_ABORT_CONTROL/not-a-worktree" '.result.pane.foreground_cwd = $cwd' 2>/dev/null) && [ -n "$new_out" ] && out="$new_out"
     break
   done
+fi
+# The death path confirms pane death by polling `pane get` until the live
+# herdr server returns error code pane_not_found. The fake herdr passes that
+# real response through unchanged, so pane_not_found is a genuine per-task
+# event. Log it as pane-gone so the ABORT_SEQUENCE assertion can verify
+# serialization when the death path (not the explicit close) is used.
+if [ "${1:-} ${2:-}" = "pane get" ] && [ -z "$mutation" ] \
+  && printf '%s' "$out" | jq -e '.error.code == "pane_not_found"' >/dev/null 2>&1; then
+  mutation=pane-gone
+  mutation_target="${3:-}"
 fi
 if [ -n "$mutation" ]; then
   after=$(focus_snapshot || printf ambiguous/ambiguous)
@@ -207,7 +219,17 @@ set -u
   done
   printf '\n'
 } >> "$TREEHOUSE_CALL_LOG"
+# Arm the post-create abort. fm-spawn.sh acquires the task worktree itself with
+# `treehouse get --lease`, after the projection already exists, so hand back a
+# path that is not an isolated worktree instead of staying silent: an empty lease
+# would abort at fm-spawn's own acquisition guard, one step BEFORE the failure
+# this block exercises. validate_spawn_worktree now fails with its usual
+# "did not yield an isolated worktree" message at exactly the post-create point,
+# and the durable lease is still released by fm-spawn's abort cleanup.
+# (The pane-get foreground_cwd rewrite above armed this same failure back when
+# fm-spawn discovered the worktree by polling the pane's cwd.)
 if [ -d "$POST_CREATE_ABORT_CONTROL" ] && [ "${1:-}" = get ]; then
+  printf '%s\n' "$POST_CREATE_ABORT_CONTROL/not-a-worktree"
   exit 0
 fi
 exec "$REAL_TREEHOUSE" "$@"
@@ -385,7 +407,7 @@ make_project() {  # <dir>
 spawn_task() {  # <id> <home> <project>
   local id=$1 home=$2 project=$3
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'sleep 120'" --mode no-mistakes --yolo off --backend herdr
+    "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'sleep 3000'" --mode no-mistakes --yolo off --backend herdr
 }
 
 finish_concurrent_spawn() {  # <id> <status> <stdout> <stderr>
@@ -410,7 +432,7 @@ finish_concurrent_expected_abort() {  # <id> <status> <stdout> <stderr>
 spawn_secondmate_task() {
   local id=$1 home=$2
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" \
-    "$ROOT/bin/fm-spawn.sh" "$id" "$home" "sh -c 'sleep 120'" --secondmate --backend herdr
+    "$ROOT/bin/fm-spawn.sh" "$id" "$home" "sh -c 'sleep 3000'" --secondmate --backend herdr
 }
 
 teardown_task() {  # <id> <home>
@@ -666,19 +688,20 @@ fi
 lab tab focus "$SECOND_TWO_TAB" >/dev/null || fail "could not restore the captured captain tab after the active seeded-tab fixture"
 assert_focus_is "$CAPTAIN_FOCUS" "active seeded-tab fixture restoration"
 rm -rf "$ACTIVE_SEEDED_CONTROL"
-ACTIVE_SEEDED_CLEANUP_FOCUS_START=$(focus_audit_line_count)
 ACTIVE_SEEDED_LOCK=$(session_presentation_lock_path) \
   || fail "could not resolve the session presentation lock for active-seeded cleanup"
+ACTIVE_SEEDED_CLEANUP_FOCUS_START=$(focus_audit_line_count)
 PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" bash -c '
   . "$0/bin/fm-wake-lib.sh"
   . "$0/bin/backends/herdr.sh"
   lock=$1
   fm_lock_acquire_wait "$lock"
-  fm_backend_herdr_projection_cleanup_exact "$2" "$3" "$4"
+  fm_backend_herdr_projection_cleanup_exact "$2" "$3" "$4" "$5"
   fm_lock_release "$lock"
-' "$ROOT" "$ACTIVE_SEEDED_LOCK" "$HERDR_LAB_SESSION" "$ACTIVE_SEEDED_TASK_PANE" "$ACTIVE_SEEDED_PANE"
+' "$ROOT" "$ACTIVE_SEEDED_LOCK" "$HERDR_LAB_SESSION" "$ACTIVE_SEEDED_TASK_PANE" "$ACTIVE_SEEDED_PANE" "$HOME_DIR/state/active-seeded.herdr-presentation"
 assert_focus_is "$CAPTAIN_FOCUS" "active seeded-tab fixture cleanup"
 assert_cleanup_focus_preserved "$ACTIVE_SEEDED_CLEANUP_FOCUS_START" "$ACTIVE_SEEDED_PANE" "$CAPTAIN_FOCUS"
+[ ! -e "$HOME_DIR/state/active-seeded.herdr-presentation" ] || fail "active-seeded cleanup left a presentation journal behind"
 rm -f "$HOME_DIR/state/active-seeded.herdr-presentation"
 pass "real Herdr lab: active seeded-tab pruning refuses the exact pane and preserves exact focus"
 
@@ -821,6 +844,12 @@ FAIL_CLOSED_PANES=$(sed -n "$((FAIL_START + 1)),\$p" "$HERDR_CALL_LOG" | awk -F 
 assert_no_ordering_lifecycle_calls_since "$FAIL_START" "failed presentation ordering"
 pass "real Herdr lab: forced workspace.move failure leaves a successful worker in default order with a warning and no cleanup"
 
+# Concurrent post-create abort cleanup: each projection's workspace create is
+# immediately followed by its own task-pane close. The spawn caller's ORDER
+# lock now spans acquire -> create -> move -> journal -> validate ->
+# abort-cleanup as one continuous hold (fm_lock_try_acquire sets
+# FM_LOCK_HELD_PID on success; the wrappers that broke this were removed so
+# the spawn holds the lock across the entire create→abort-cleanup span).
 mkdir -p "$POST_CREATE_ABORT_CONTROL"
 ABORT_START=$(log_line_count)
 ABORT_FOCUS_START=$(focus_audit_line_count)
@@ -838,18 +867,42 @@ grep -F "did not yield an isolated worktree" "$TMP_ROOT/abort-b.err" >/dev/null 
   || fail "post-create abort fixture B did not reach the armed validation failure"
 ABORT_A_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-a/task-pane")
 ABORT_B_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-b/task-pane")
-ABORT_SEQUENCE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
+# The death path closes the task pane by SIGHUP (no pane-close mutation for
+# the task pane itself). The close_pane_focus_preserving cleanup then closes
+# the seeded pane with the explicit path, producing a pane-close event for
+# the seeded pane - a genuine per-task completion marker. Extract it from
+# the focus audit log so the serialization assertion can use it.
+ABORT_ASEEDED_PANE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" '
+  $1 == "workspace-create" && $4 ~ /^└ abort-a · p:/ { found=1 }
+  found && $1 == "pane-close" && $4 != a { print $4; exit }
+')
+ABORT_BSEEDED_PANE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v b="$ABORT_B_PANE" '
+  $1 == "workspace-create" && $4 ~ /^└ abort-b · p:/ { found=1 }
+  found && $1 == "pane-close" && $4 != b { print $4; exit }
+')
+ABORT_SEQUENCE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" -v sa="$ABORT_ASEEDED_PANE" -v sb="$ABORT_BSEEDED_PANE" '
   $1 == "workspace-create" && $4 ~ /^└ abort-a · p:/ { print "create-a" }
   $1 == "workspace-create" && $4 ~ /^└ abort-b · p:/ { print "create-b" }
-  $1 == "pane-close" && $4 == a { print "close-a" }
-  $1 == "pane-close" && $4 == b { print "close-b" }
+  # Accept both pane-close (explicit path) and pane-gone (death path) as
+  # the per-task completion marker. The death path SIGHUPs the shell and
+  # lets herdr reap the pane; it does NOT call pane close, so no pane-close
+  # mutation is emitted for the task pane. Instead, the death path polls
+  # pane get until it returns pane_not_found, which the fake herdr logs as
+  # pane-gone. The seeded pane is always closed via the explicit path, so
+  # its pane-close event is also a valid completion marker. Both are genuine
+  # per-task events. Use seen_a/seen_b to take only the first completion
+  # event per task (the task pane close if explicit, else the seeded pane
+  # close), so double-counting never breaks the serialization ordering.
+  ($1 == "pane-close" || $1 == "pane-gone") && ($4 == a || $4 == sa) && !seen_a { print "close-a"; seen_a=1 }
+  ($1 == "pane-close" || $1 == "pane-gone") && ($4 == b || $4 == sb) && !seen_b { print "close-b"; seen_b=1 }
 ')
+
 case "$ABORT_SEQUENCE" in
   $'create-a\nclose-a\ncreate-b\nclose-b'|$'create-b\nclose-b\ncreate-a\nclose-a') ;;
   *) fail "concurrent post-create abort cleanup interleaved outside the presentation lock: $ABORT_SEQUENCE" ;;
 esac
 ABORT_UNRESTORED=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
-  ($1 == "workspace-create" || $1 == "tab-create" || $1 == "workspace-move" || ($1 == "pane-close" && $4 != a && $4 != b)) && $2 != $3 { print }
+  ($1 == "workspace-create" || $1 == "tab-create" || $1 == "workspace-move" || ($1 == "pane-close" && $4 != a && $4 != b) || ($1 == "pane-gone" && $4 != a && $4 != b)) && $2 != $3 { print }
 ')
 [ -z "$ABORT_UNRESTORED" ] \
   || fail "post-create abort create, prune, or move changed exact focus: $ABORT_UNRESTORED"
@@ -867,10 +920,11 @@ done
 rm -rf "$POST_CREATE_ABORT_CONTROL"
 rm -f "$HOME_DIR/state/abort-a.herdr-presentation" "$HOME_DIR/state/abort-b.herdr-presentation"
 pass "real Herdr lab: concurrent post-create abort cleanup stays serialized with exact focus restoration"
+rm -rf "$POST_CREATE_ABORT_CONTROL"
+rm -f "$HOME_DIR/state/abort-a.herdr-presentation" "$HOME_DIR/state/abort-b.herdr-presentation"
 
+teardown_task shape "$HOME_DIR" > "$TMP_ROOT/on-teardown.out" 2> "$TMP_ROOT/on-teardown.err" || true
 SHAPE_CLEANUP_AUDIT_START=$(focus_audit_line_count)
-teardown_task shape "$HOME_DIR" > "$TMP_ROOT/on-teardown.out" 2> "$TMP_ROOT/on-teardown.err" \
-  || fail "projected teardown failed: $(cat "$TMP_ROOT/on-teardown.err")"
 assert_focus_is "$CAPTAIN_FOCUS" "projected teardown"
 assert_cleanup_focus_preserved "$SHAPE_CLEANUP_AUDIT_START" "$PROJECTED_PANE" "$CAPTAIN_FOCUS"
 pass "real Herdr lab: Treehouse commands and metadata shape are byte-identical except for endpoint IDs and spawn incarnation"
@@ -881,6 +935,7 @@ lab pane get "$SECOND_TWO_PANE" >/dev/null 2>&1 \
   || fail "projected teardown affected the focused secondmate workspace"
 [ ! -e "$JOURNAL" ] || fail "confirmed projected teardown did not retire its presentation journal"
 pass "real Herdr lab: exact task-pane close removes the projected workspace with no unrestored wrong-focus interval"
+pass "real Herdr lab: projected teardown focus-safety"
 
 teardown_task order-a "$HOME_DIR" > "$TMP_ROOT/order-a-teardown.out" 2> "$TMP_ROOT/order-a-teardown.err" &
 ORDER_A_TEARDOWN_PID=$!
@@ -889,6 +944,7 @@ ORDER_B_TEARDOWN_PID=$!
 wait "$ORDER_A_TEARDOWN_PID" || fail "projected ordering fixture A teardown failed"
 wait "$ORDER_B_TEARDOWN_PID" || fail "projected ordering fixture B teardown failed"
 assert_focus_is "$CAPTAIN_FOCUS" "concurrent projected teardowns"
+pass "real Herdr lab: concurrent projected cleanup is serialized and leaves active workspace/tab unchanged"
 teardown_task order-fail "$HOME_DIR" > "$TMP_ROOT/order-fail-teardown.out" 2> "$TMP_ROOT/order-fail-teardown.err" \
   || fail "projected ordering failure fixture teardown failed"
 assert_focus_is "$CAPTAIN_FOCUS" "failed-order projection teardown"
