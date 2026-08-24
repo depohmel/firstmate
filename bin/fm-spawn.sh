@@ -38,6 +38,10 @@
 #   axes chosen by firstmate at intake. They are only threaded into harnesses whose
 #   installed CLIs were verified to support that axis; unsupported axes are omitted
 #   from that harness's launch rather than guessed.
+#   --dispatch-rationale <text> and --dispatch-override <text> record a conscious
+#   model-tier choice while config/crew-dispatch.json is active; either satisfies
+#   the explicit --model guard and the text lands in the task meta as
+#   dispatch_rationale= or dispatch_override= (no-op when that file is absent).
 #   --backend <name> is the explicit runtime session-provider backend for this
 #   exact task only (docs/configuration.md "Runtime backend" owns when that flag
 #   is authorized). Without it, the script resolves FM_BACKEND, then
@@ -141,7 +145,8 @@
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
-#   source of truth; shared --scout/--harness/--model/--effort/--backend/--mode/--yolo
+#   source of truth; shared --scout/--harness/--model/--effort/--backend/--mode/--yolo/
+#   --dispatch-rationale/--dispatch-override
 #   applies to every pair. A ship batch therefore carries one delivery contract, and each
 #   pair still checks it against its own brief; a batch spanning modes is two invocations.
 #   If config/crew-dispatch.json exists, shared --harness is required for crewmate
@@ -275,6 +280,8 @@ BACKEND_ARG=
 MODE=
 YOLO=
 TRACEPARENT_ARG=
+DISPATCH_RATIONALE=
+DISPATCH_OVERRIDE_REASON=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
@@ -282,6 +289,8 @@ BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
 TRACEPARENT_SET=0
+DISPATCH_RATIONALE_SET=0
+DISPATCH_OVERRIDE_SET=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -298,6 +307,8 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
+      dispatch-rationale) DISPATCH_RATIONALE=$a; DISPATCH_RATIONALE_SET=1 ;;
+      dispatch-override) DISPATCH_OVERRIDE_REASON=$a; DISPATCH_OVERRIDE_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -321,6 +332,10 @@ for a in "$@"; do
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
+    --dispatch-rationale) want_value=dispatch-rationale ;;
+    --dispatch-rationale=*) DISPATCH_RATIONALE=${a#--dispatch-rationale=}; DISPATCH_RATIONALE_SET=1 ;;
+    --dispatch-override) want_value=dispatch-override ;;
+    --dispatch-override=*) DISPATCH_OVERRIDE_REASON=${a#--dispatch-override=}; DISPATCH_OVERRIDE_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -332,6 +347,8 @@ done
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
+[ "$DISPATCH_RATIONALE_SET" -eq 0 ] || [ -n "$DISPATCH_RATIONALE" ] || { echo "error: --dispatch-rationale requires a non-empty value" >&2; exit 1; }
+[ "$DISPATCH_OVERRIDE_SET" -eq 0 ] || [ -n "$DISPATCH_OVERRIDE_REASON" ] || { echo "error: --dispatch-override requires a non-empty value" >&2; exit 1; }
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
 # Nothing else may reach the pane's TRACEPARENT export.
@@ -2684,7 +2701,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx dispatch_rationale dispatch_override", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2702,6 +2719,10 @@ preserve_relaunch_meta() {
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
+  if [ -f "$CONFIG/crew-dispatch.json" ]; then
+    [ "$DISPATCH_RATIONALE_SET" -eq 0 ] || echo "dispatch_rationale=$DISPATCH_RATIONALE"
+    [ "$DISPATCH_OVERRIDE_SET" -eq 0 ] || echo "dispatch_override=$DISPATCH_OVERRIDE_REASON"
+  fi
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   echo "spawn_gen=$SPAWN_GEN"
   # Default-off writes no traceparent= line.
