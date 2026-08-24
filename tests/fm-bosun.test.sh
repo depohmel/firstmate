@@ -1321,6 +1321,64 @@ test_deploy_drift_suppressed_by_hold_title() {
   pass "deploy drift suppressed by a hold whose title names the project"
 }
 
+test_deploy_drift_subject_match_is_literal() {
+  local home log
+  home=$(make_home deploy-drift-literal-subject)
+  mkdir -p "$home/config"
+  {
+    printf 'app(v2)\thomelab\t/opt/appv2\t\t\n'
+    printf 'c++\thomelab\t/opt/cpp\t\t\n'
+    printf 'famclaw\thomelab\t/opt/famclaw\t\t\n'
+  } > "$home/config/deploy-targets.tsv"
+
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "OK|3|0|none|0"' > "$home/fakebin/ssh"
+  chmod +x "$home/fakebin/ssh"
+
+  # None of these holds names a drifting target literally: "appv2" is a
+  # different string than "app(v2)", and "c compiler" is not "c++". Only the
+  # ordinary repo-matched famclaw hold covers its target.
+  add_captain_decision_hold "$home" "build" "pipeline" "" \
+    "Decision: rebuild appv2 before the next release" >/dev/null
+  add_captain_decision_hold "$home" "tools" "toolchain" "" \
+    "Decision: restart the c compiler on homelab" >/dev/null
+  add_captain_decision_hold "$home" "ops" "deploy" "famclaw" >/dev/null
+
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_no_grep "deploy-drift:app(v2):suppressed" "$log" \
+    "a hold naming appv2 must not suppress drift for the app(v2) target"
+  assert_no_grep "deploy-drift:c++:suppressed" "$log" \
+    "a hold naming the c compiler must not suppress drift for the c++ target"
+  assert_grep "deploy-drift:famclaw:suppressed:captain-hold" "$log" \
+    "an ordinary repo-matched hold must still suppress its own drift line"
+  assert_grep "DEPLOY_DRIFT: app(v2):" "$log" \
+    "the unheld app(v2) drift line must still escalate"
+  assert_grep "DEPLOY_DRIFT: c++:" "$log" \
+    "the unheld c++ drift line must still escalate"
+  assert_no_grep "DEPLOY_DRIFT: famclaw:" "$log" \
+    "the held famclaw drift line must not escalate"
+
+  # Holds that do name the targets literally suppress them, metacharacters
+  # and all.
+  drop_captain_decision_hold "$home" "build-decision-pipeline"
+  drop_captain_decision_hold "$home" "tools-decision-toolchain"
+  add_captain_decision_hold "$home" "build" "rollout" "" \
+    "Decision: hold app(v2) rollout until the captain says go" >/dev/null
+  add_captain_decision_hold "$home" "tools" "rebuild" "" \
+    "Decision: hold c++ rebuild until the captain says go" >/dev/null
+  rm -f "$log"
+
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_grep "deploy-drift:app(v2):suppressed:captain-hold" "$log" \
+    "a hold naming app(v2) literally must suppress its drift line"
+  assert_grep "deploy-drift:c++:suppressed:captain-hold" "$log" \
+    "a hold naming c++ literally must suppress its drift line"
+  assert_no_grep "deploy-drift:WOULD-escalate" "$log" \
+    "with every target held nothing escalates"
+  pass "deploy-drift subject matching treats metacharacter names literally"
+}
+
 # --- Run all tests ---
 
 test_no_progress_crew_detected
@@ -1357,3 +1415,4 @@ test_no_progress_crew_suppressed_by_paused_status
 test_parked_work_suppressed_by_captain_hold
 test_deploy_drift_suppressed_by_captain_hold
 test_deploy_drift_suppressed_by_hold_title
+test_deploy_drift_subject_match_is_literal

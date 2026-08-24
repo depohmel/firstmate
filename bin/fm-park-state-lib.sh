@@ -127,9 +127,11 @@ task_has_open_captain_hold() {  # <fm-home> <task-id>
 }
 
 # 0 when <subject> occurs in <haystack> on a word boundary, case-insensitive.
+# Every ERE metacharacter in the subject is escaped, so a project named
+# app(v2) or c++ is matched as itself rather than as a pattern.
 _parked_subject_mentions() {  # <subject> <haystack>
   local subject=$1 hay=$2 re
-  re=$(printf '%s' "$subject" | tr '[:upper:]' '[:lower:]' | sed -e 's/[][\\.^$*]/\\&/g')
+  re=$(printf '%s' "$subject" | tr '[:upper:]' '[:lower:]' | sed -e 's/[][\\.^$*+?(){}|]/\\&/g')
   [ -n "$hay" ] || return 1
   printf '%s' "$hay" | grep -qiE "(^|[^a-z0-9])${re}([^a-z0-9]|$)"
 }
