@@ -307,8 +307,23 @@ hash_text() {
   fi
 }
 
+# A pid the kernel can never hand out, for fixtures that need a provably dead
+# lock holder. Scanning up from a fixed base for the first FREE pid is not
+# enough: when the kernel's allocation frontier happens to sit near that base,
+# the first free pid is exactly the one the next fork is given, so a test that
+# then spawns processes recycles its own "dead" pid onto a live one and every
+# contender correctly refuses to steal the lock. Linux publishes the wrap value
+# as /proc/sys/kernel/pid_max, and that value is one PAST the largest assignable
+# pid, so starting there is never allocatable; elsewhere (macOS caps pids at
+# 99999) the 999999 floor is already out of range. The scan stays only as a
+# guard against an unreadable or implausibly small bound.
 dead_pid() {
-  local p=999999
+  local p=999999 bound
+  bound=$(cat /proc/sys/kernel/pid_max 2>/dev/null || true)
+  case "$bound" in
+    ''|*[!0-9]*) ;;
+    *) if [ "$bound" -gt "$p" ]; then p=$bound; fi ;;
+  esac
   while kill -0 "$p" 2>/dev/null; do
     p=$((p + 1))
   done

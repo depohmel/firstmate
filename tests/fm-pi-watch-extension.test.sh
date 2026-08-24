@@ -917,8 +917,14 @@ test_pi_session_transition_generation_owner() {
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'watcher: started pid=%s\n' "$$"
-printf '%s\n' "$$" > "${FM_CHILD_PID_FILE:?}"
+# Ledger row first, child-pid file second. The test treats the pid file as this
+# child's readiness signal and then immediately reads the ledger to count live
+# arm children, so publishing readiness before the row lets a preempted child be
+# "ready" while its row is still missing - liveArmPids() then sees zero and the
+# generation assertions fail. Writing the row first makes the pid file a proof
+# that the row is already durable. Keep this order.
 printf 'arm pid=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+printf '%s\n' "$$" > "${FM_CHILD_PID_FILE:?}"
 trap 'exit 0' TERM INT
 while :; do sleep 0.2; done
 SH

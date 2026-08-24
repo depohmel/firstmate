@@ -74,10 +74,7 @@ test_stale_watch_lock_reclaimed() {
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/watch.out"
-  dead_pid=999999
-  while kill -0 "$dead_pid" 2>/dev/null; do
-    dead_pid=$((dead_pid + 1))
-  done
+  dead_pid=$(dead_pid)
   mkdir "$state/.watch.lock"
   printf '%s\n' "$dead_pid" > "$state/.watch.lock/pid"
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
@@ -218,6 +215,29 @@ test_lock_single_winner_under_concurrency() {
   wins=$(awk 'NF { c++ } END { print c + 0 }' "$marker")
   [ "$wins" -eq 1 ] || fail "expected exactly one lock winner under concurrency, got $wins"
   pass "concurrent fm_lock_try_acquire yields exactly one winner"
+}
+
+# The stale-lock fixtures are only meaningful if their "dead" holder pid stays
+# dead for the whole case. These suites fork heavily, so a pid the kernel can
+# still assign gets recycled onto one of those forks mid-case: every contender
+# then correctly sees a LIVE holder, nobody steals, and the concurrency cases
+# fail with zero winners. Assert the fixture pid is past the kernel's assignable
+# range, which is the property that makes recycling impossible rather than
+# merely unlikely.
+test_dead_pid_fixture_is_outside_the_assignable_range() {
+  local p bound
+  p=$(dead_pid)
+  case "$p" in
+    ''|*[!0-9]*) fail "dead_pid did not yield a numeric pid ('$p')" ;;
+  esac
+  kill -0 "$p" 2>/dev/null && fail "dead_pid returned a live pid ($p)"
+  bound=$(cat /proc/sys/kernel/pid_max 2>/dev/null || true)
+  case "$bound" in
+    ''|*[!0-9]*) bound=100000 ;;  # no /proc: macOS caps assignable pids at 99999
+  esac
+  [ "$p" -ge "$bound" ] \
+    || fail "dead_pid returned $p, which the kernel can still assign (bound $bound)"
+  pass "dead-pid fixture is outside the kernel's assignable pid range"
 }
 
 test_lock_steals_dead_pid_lock() {
@@ -651,8 +671,7 @@ test_arm_starts_and_self_heals() {
     armout="$dir/arm.out"
     dead_pid=
     if [ "$row" = dead-pid ]; then
-      dead_pid=999999
-      while kill -0 "$dead_pid" 2>/dev/null; do dead_pid=$((dead_pid + 1)); done
+      dead_pid=$(dead_pid)
       mkdir "$state/.watch.lock"
       printf '%s\n' "$dead_pid" > "$state/.watch.lock/pid"
       printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
@@ -1106,6 +1125,7 @@ test_stale_watch_lock_reclaimed
 test_stale_watch_reclaim_publishes_before_clear
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
+test_dead_pid_fixture_is_outside_the_assignable_range
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency
