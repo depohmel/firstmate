@@ -1041,35 +1041,48 @@ test_idle_fleet_silent_when_busy() {
 
 # write_armed_poll <home> <id> <pr-url>: write the on-disk shape that
 # bin/fm-pr-check.sh leaves when a merge poll is armed - the 11-line
-# transactional registration (URL on line 4) plus its validated sidecar -
-# and record pr= in the task meta.
+# transactional registration plus its sidecar, both carrying the same
+# provider-tagged identity re-derived from <pr-url> exactly as
+# bin/fm-pr-lib.sh's parsers require - and record pr= in the task meta.
 write_armed_poll() {  # <home> <id> <pr-url>
-  local home=$1 id=$2 url=$3
-  local reg="$home/state/$id.pr-poll-registration"
+  local home=$1 id=$2 url=$3 rest path number
+  rest=${url#https://github.com/}
+  path=${rest%%/pull/*}
+  number=${rest##*/pull/}
   printf '%s\n' \
     "fm-pr-poll-registration-v2" "$id" "github" "$url" "github.com" \
-    "depohmel/famclaw/pulls" "4" \
+    "$path" "$number" \
     "0000000000000000000000000000000000000000000000000000000000000000" \
     "0000000000000000000000000000000000000000000000000000000000000000" \
-    "1:1" "1:1" > "$reg"
-  printf '%s\n' "github" "$url" "github.com" "depohmel/famclaw/pulls" "4" \
+    "1:1" "1:1" > "$home/state/$id.pr-poll-registration"
+  printf '%s\n' "github" "$url" "github.com" "$path" "$number" \
     > "$home/state/$id.pr-poll"
   printf 'pr=%s\n' "$url" >> "$home/state/$id.meta"
 }
 
-# add_captain_decision_hold <home> <origin-id> <key> [repo]: add a tasks-axi
-# item named <origin-id>-decision-<key> (the fm-decision-hold identity
-# contract) and place it on captain hold. Prints the hold id.
-add_captain_decision_hold() {  # <home> <origin-id> <key> [repo]
-  local home=$1 origin=$2 key=$3 repo=${4:-}
+# retire_armed_poll <home> <id>: publish the retirement receipt without
+# removing the registration or sidecar - the window bin/fm-watch.sh is in
+# between fm_pr_poll_retirement_publish and a recovery that has not yet
+# (or cannot) delete the artifacts.
+retire_armed_poll() {  # <home> <id>
+  local home=$1 id=$2
+  printf 'merged\n' > "$home/state/$id.pr-poll-retirement"
+}
+
+# add_captain_decision_hold <home> <origin-id> <key> [repo] [title]: add a
+# tasks-axi item named <origin-id>-decision-<key> (the fm-decision-hold
+# identity contract) and place it on captain hold. Prints the hold id.
+add_captain_decision_hold() {  # <home> <origin-id> <key> [repo] [title]
+  local home=$1 origin=$2 key=$3 repo=${4:-} title=${5:-}
   local hold_id="${origin}-decision-${key}"
+  [ -n "$title" ] || title="Decision: $key"
   setup_backlog_config "$home"
   if [ -n "$repo" ]; then
-    (cd "$home" && tasks-axi add "$hold_id" "Decision: $key" --repo "$repo" \
+    (cd "$home" && tasks-axi add "$hold_id" "$title" --repo "$repo" \
       --kind captain \
       >/dev/null 2>&1)
   else
-    (cd "$home" && tasks-axi add "$hold_id" "Decision: $key" --kind captain \
+    (cd "$home" && tasks-axi add "$hold_id" "$title" --kind captain \
       >/dev/null 2>&1)
   fi
   (cd "$home" && tasks-axi hold "$hold_id" --reason "captain decision pending" \
@@ -1113,6 +1126,65 @@ test_no_progress_crew_suppressed_by_armed_poll() {
   assert_grep "no-progress:$id:WOULD-escalate" "$log" \
     "no-progress must alarm again once the armed poll is retired"
   pass "no-progress crew suppressed by armed merge poll"
+}
+
+test_no_progress_crew_alarms_when_poll_is_retired() {
+  local home repo worktree id log
+  home=$(make_home no-progress-retired-poll)
+  repo="$TMP_ROOT/repo-noprog-retired"
+  worktree="$TMP_ROOT/wt-noprog-retired"
+
+  make_stale_worktree "$repo" "$worktree" feat-noprog-retired 7200
+
+  id=test-noprog-retired
+  fm_write_meta "$home/state/$id.meta" \
+    "worktree=$worktree" "project=$repo" "kind=ship"
+  printf 'working: waiting for CI\n' > "$home/state/$id.status"
+  write_fake_gh "$home" "abc1234" "2026-08-20T00:00:00Z" "2026-08-21T00:00:00Z" "0"
+  write_armed_poll "$home" "$id" "https://github.com/depohmel/famclaw/pull/4"
+
+  # Retirement is two-phase: the receipt is published before the registration
+  # and sidecar are removed, and that recovery can stall. A receipt means the
+  # merge watch is over, so the idle crew is no longer an expected wait even
+  # though both poll files still exist on disk.
+  retire_armed_poll "$home" "$id"
+
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_grep "no-progress:$id:WOULD-escalate" "$log" \
+    "a published retirement receipt must not keep the no-progress alarm suppressed"
+  assert_no_grep "no-progress:$id:suppressed:parked" "$log" \
+    "a retired poll is not an armed poll"
+  pass "retired merge poll no longer parks the no-progress crew"
+}
+
+test_no_progress_crew_alarms_on_malformed_poll_record() {
+  local home repo worktree id log
+  home=$(make_home no-progress-bad-poll)
+  repo="$TMP_ROOT/repo-noprog-bad"
+  worktree="$TMP_ROOT/wt-noprog-bad"
+
+  make_stale_worktree "$repo" "$worktree" feat-noprog-bad 7200
+
+  id=test-noprog-bad
+  fm_write_meta "$home/state/$id.meta" \
+    "worktree=$worktree" "project=$repo" "kind=ship"
+  printf 'working: waiting for CI\n' > "$home/state/$id.status"
+  write_fake_gh "$home" "abc1234" "2026-08-20T00:00:00Z" "2026-08-21T00:00:00Z" "0"
+  write_armed_poll "$home" "$id" "https://github.com/depohmel/famclaw/pull/4"
+
+  # A registration whose recorded path does not reconstruct its own URL is not
+  # a record bin/fm-pr-lib.sh would ever accept, so no watcher is polling it.
+  sed -i.bak '6s#.*#depohmel/other#' "$home/state/$id.pr-poll-registration"
+  rm -f "$home/state/$id.pr-poll-registration.bak"
+
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_grep "no-progress:$id:WOULD-escalate" "$log" \
+    "a registration the poll-record parser rejects must not suppress the alarm"
+  assert_no_grep "no-progress:$id:suppressed:parked" "$log" \
+    "an unparseable registration is not an armed poll"
+  pass "malformed poll registration no longer parks the no-progress crew"
 }
 
 test_no_progress_crew_suppressed_by_paused_status() {
@@ -1219,6 +1291,36 @@ test_deploy_drift_suppressed_by_captain_hold() {
   pass "deploy drift suppressed by open captain hold"
 }
 
+test_deploy_drift_suppressed_by_hold_title() {
+  local home hold_id log
+  home=$(make_home deploy-drift-held-title)
+  mkdir -p "$home/config"
+  printf 'famclaw\thomelab\t/opt/famclaw\t\t\n' > "$home/config/deploy-targets.tsv"
+
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "OK|3|0|none|0"' > "$home/fakebin/ssh"
+  chmod +x "$home/fakebin/ssh"
+
+  # Neither the hold identity nor its repo field names the project; only the
+  # backlog title does, and that title now rides the cached hold list.
+  hold_id=$(add_captain_decision_hold "$home" "relay" "rollout" "" \
+    "Decision: hold the famclaw restart until the captain says go")
+
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_no_grep "deploy-drift:WOULD-escalate" "$log" \
+    "a hold whose title names the project must suppress the deploy-drift re-alarm"
+  assert_grep "deploy-drift:famclaw:suppressed:captain-hold" "$log" \
+    "the deploy-drift suppression must be logged"
+
+  drop_captain_decision_hold "$home" "$hold_id"
+  rm -f "$log"
+  run_bosun "$home"
+  log="$home/state/.bosun.log"
+  assert_grep "deploy-drift:WOULD-escalate" "$log" \
+    "deploy drift must alarm again once the hold is answered"
+  pass "deploy drift suppressed by a hold whose title names the project"
+}
+
 # --- Run all tests ---
 
 test_no_progress_crew_detected
@@ -1249,6 +1351,9 @@ test_idle_fleet_silent_without_ready_work
 test_idle_fleet_silent_when_all_held
 test_idle_fleet_silent_when_busy
 test_no_progress_crew_suppressed_by_armed_poll
+test_no_progress_crew_alarms_when_poll_is_retired
+test_no_progress_crew_alarms_on_malformed_poll_record
 test_no_progress_crew_suppressed_by_paused_status
 test_parked_work_suppressed_by_captain_hold
 test_deploy_drift_suppressed_by_captain_hold
+test_deploy_drift_suppressed_by_hold_title

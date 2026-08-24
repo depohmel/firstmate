@@ -9,8 +9,9 @@
 #      bin/fm-classify-lib.sh, reused here so the verb cannot drift;
 #   2. the task has an armed merge poll against its recorded pr=
 #      (state/<id>.pr-poll-registration plus the state/<id>.pr-poll sidecar,
-#      armed transactionally by bin/fm-pr-check.sh) - the watcher owns the
-#      real merge watch, so an idle pane is expected;
+#      armed transactionally by bin/fm-pr-check.sh and read back through
+#      bin/fm-pr-lib.sh's own record parsers) - the watcher owns the real
+#      merge watch, so an idle pane is expected;
 #   3. an open captain decision hold covers the subject - a tasks-axi item
 #      with kind=captain currently held, whose identity is
 #      <subject-id>-decision-<key> for a task subject, or whose repo field
@@ -25,14 +26,17 @@
 # Suppression is FAIL-OPEN FOR ALARMS: when the held list cannot be read
 # (tasks-axi absent or erroring), the hold predicates report "no hold" and the
 # checks alarm as before. A missing dependency must never silence a supervisor.
-set -u
 
 _PARK_STATE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _PARK_STATE_LIB_DIR="."
 # shellcheck source=bin/fm-classify-lib.sh
 . "$_PARK_STATE_LIB_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-pr-lib.sh
+. "$_PARK_STATE_LIB_DIR/fm-pr-lib.sh"
 
-# Per-process cache of open captain decision holds: one "<id>\t<repo>" line per
-# hold. Empty means none open (or none readable - both suppress nothing).
+# Per-process cache of open captain decision holds: one "<id>\t<repo>\t<title>"
+# line per hold. `tasks-axi list` already carries the title, so the whole cache
+# costs one subprocess per process - never one lookup per hold per query.
+# Empty means none open (or none readable - both suppress nothing).
 _PARKED_HOLDS_HOME=""
 _PARKED_HOLDS_LOADED=0
 _PARKED_HOLDS=""
@@ -54,7 +58,7 @@ parked_load_holds() {  # <fm-home>
   command -v tasks-axi >/dev/null 2>&1 || return 0
   out=$(cd "$home" && tasks-axi list --kind captain --state held 2>/dev/null) || return 0
   _PARKED_HOLDS=$(printf '%s\n' "$out" \
-    | sed -n 's/^  \([^,]*\),\([^,]*\),captain,\([^,]*\),.*/\1\t\3/p')
+    | sed -n 's/^  \([^,]*\),\([^,]*\),captain,\([^,]*\),\(.*\)$/\1\t\3\t\4/p')
   return 0
 }
 
@@ -65,26 +69,45 @@ task_status_is_paused() {  # <state-dir> <task-id>
   [ -n "$last" ] && status_is_paused "$last"
 }
 
-# 0 if the task has an armed merge poll against its recorded pr=: the
-# transactional registration (state/<id>.pr-poll-registration, written only by
-# bin/fm-pr-lib.sh's armed-poll publication) and the validated sidecar
-# (state/<id>.pr-poll) both exist as regular, non-symlink files, and when the
-# meta records a canonical pr= the registration's URL (line 4 of the
-# fm-pr-poll-registration-v2 record) equals it. A registration against a
-# different PR than the recorded one does NOT arm the expected wait.
+# 0 if the task has an armed merge poll against its recorded pr=. Both halves
+# of the transactional record are read back through their owner in
+# bin/fm-pr-lib.sh - fm_pr_poll_registration_parse for
+# state/<id>.pr-poll-registration and fm_pr_poll_data_parse for the
+# state/<id>.pr-poll sidecar - so a truncated, mistyped, symlinked or
+# cross-bound record is not mistaken for an armed watch, and the two must
+# agree on the same provider-tagged identity.
+#
+# A published retirement receipt (state/<id>.pr-poll-retirement) means the
+# watch is over even while its files survive: retirement is two-phase, the
+# receipt is written before the registration and sidecar are removed and the
+# recovery between those steps can stall indefinitely. A receipt therefore
+# disarms the poll here.
+#
+# When the meta records a pr= the registration must name that same canonical
+# URL. A registration against a different PR than the recorded one does NOT
+# arm the expected wait.
 task_has_armed_poll() {  # <state-dir> <task-id> <meta-file>
   local state=$1 id=$2 meta=$3
-  local reg="$state/$id.pr-poll-registration" data="$state/$id.pr-poll"
-  [ -f "$reg" ] && [ ! -L "$reg" ] || return 1
-  [ -f "$data" ] && [ ! -L "$data" ] || return 1
-  local reg_url pr_url
-  reg_url=$(sed -n '4p' "$reg" 2>/dev/null)
-  pr_url=$(grep '^pr=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
-  if [ -n "$pr_url" ]; then
-    [ "$reg_url" = "$pr_url" ]
-  else
-    return 0
-  fi
+  local retirement="$state/$id.pr-poll-retirement"
+  local reg_provider reg_url reg_host reg_path reg_number pr_url
+  [ ! -e "$retirement" ] && [ ! -L "$retirement" ] || return 1
+  fm_pr_poll_registration_parse "$state/$id.pr-poll-registration" || return 1
+  [ "$FM_PR_REG_ID" = "$id" ] || return 1
+  reg_provider=$FM_PR_REG_PROVIDER
+  reg_url=$FM_PR_REG_URL
+  reg_host=$FM_PR_REG_HOST
+  reg_path=$FM_PR_REG_PATH
+  reg_number=$FM_PR_REG_NUMBER
+  fm_pr_poll_data_parse "$state/$id.pr-poll" || return 1
+  [ "$FM_PR_DATA_PROVIDER" = "$reg_provider" ] || return 1
+  [ "$FM_PR_DATA_URL" = "$reg_url" ] || return 1
+  [ "$FM_PR_DATA_HOST" = "$reg_host" ] || return 1
+  [ "$FM_PR_DATA_PATH" = "$reg_path" ] || return 1
+  [ "$FM_PR_DATA_NUMBER" = "$reg_number" ] || return 1
+  pr_url=$(sed -n 's/^pr=//p' "$meta" 2>/dev/null | tail -1)
+  [ -n "$pr_url" ] || return 0
+  fm_pr_url_parse "$pr_url" || return 1
+  [ "$FM_PR_URL" = "$reg_url" ]
 }
 
 # 0 if an open captain decision hold covers task subject <task-id>: the hold
@@ -112,28 +135,22 @@ _parked_subject_mentions() {  # <subject> <haystack>
 }
 
 # 0 if an open captain decision hold covers project subject <project>: the
-# hold's repo field names the project, the hold identity references it, or
-# (last resort, only when the cheap reads miss) the hold's backlog title does.
+# hold's repo field names the project, the hold identity references it, or its
+# backlog title does. All three read the cached hold list, so this costs no
+# subprocess of its own.
 project_has_open_captain_hold() {  # <fm-home> <project>
-  local home=$1 project=$2 line id repo
+  local home=$1 project=$2 id repo title project_lc
   parked_load_holds "$home"
   [ -n "$_PARKED_HOLDS" ] || return 1
-  local project_lc
   project_lc=$(printf '%s' "$project" | tr '[:upper:]' '[:lower:]')
-  while IFS=$'\t' read -r id repo; do
+  while IFS=$'\t' read -r id repo title; do
     [ -n "$id" ] || continue
     repo=${repo#\"}; repo=${repo%\"}
     if [ "$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')" = "$project_lc" ]; then
       return 0
     fi
     _parked_subject_mentions "$project" "$id" && return 0
-  done <<< "$_PARKED_HOLDS"
-  local show title
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    id=${line%%$'\t'*}
-    show=$(cd "$home" && tasks-axi show "$id" 2>/dev/null) || continue
-    title=$(printf '%s\n' "$show" | sed -n 's/^  title: //p' | head -1)
+    title=${title#\"}; title=${title%\"}
     _parked_subject_mentions "$project" "$title" && return 0
   done <<< "$_PARKED_HOLDS"
   return 1
