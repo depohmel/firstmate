@@ -1356,7 +1356,18 @@ const hooks = await mod.FmPrimaryWatchArm({
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
 await hooks.event(event);
-await new Promise((resolve) => setTimeout(resolve, 120));
+// The event hook starts an arm attempt without awaiting it, and a second event
+// that lands while the first is still deciding joins that in-flight attempt and
+// inherits its verdict. Deciding "not my lock" costs a git probe plus a walk up
+// the process ancestry, so on a loaded runner it outlasts any fixed sleep here -
+// the ownership flip below would then be answered by the stale refusal and the
+// arm would never spawn. Drain the refusal through the coordinator, which joins
+// the very same attempt, so the flip is always observed by a fresh one.
+const refused = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (refused !== "read-only") {
+  console.error(`unowned lock produced ${refused}, expected read-only`);
+  process.exit(1);
+}
 if (existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm ran without owning the session lock");
   process.exit(1);
