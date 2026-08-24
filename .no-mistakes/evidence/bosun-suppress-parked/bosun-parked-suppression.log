@@ -1,0 +1,59 @@
+
+========== A1. captain hold OPEN -> bosun tick (task: ship-merge-when-green-a1) ==========
+tasks-axi backlog (captain holds):
+  count: 1
+  tasks[1]{id,state,kind,repo,title,hold_kind,hold_reason}:
+    ship-merge-when-green-a1-decision-merge,queued,captain,"-","Decision: merge",captain,captain decision pending
+  help[1]:
+    - Run `tasks-axi show <id>` for full notes on a task
+
+state/.bosun.log:
+  2026-08-24T13:45:56Z	cycle:start dry-run=1
+  2026-08-24T13:45:56Z	parked:ship-merge-when-green-a1:suppressed:parked
+  2026-08-24T13:45:57Z	deploy-drift:ok:no-drift
+  2026-08-24T13:45:57Z	idle-fleet:silent:no-ready-work
+  2026-08-24T13:45:57Z	cycle:end
+
+========== A2. same condition, hold ANSWERED -> bosun tick ==========
+state/.bosun.log:
+  2026-08-24T13:45:58Z	cycle:start dry-run=1
+  2026-08-24T13:45:58Z	parked:ship-merge-when-green-a1:WOULD-escalate verb=needs-decision age=7201s esc=1 backoff=600s
+  2026-08-24T13:45:58Z	deploy-drift:ok:no-drift
+  2026-08-24T13:45:59Z	idle-fleet:silent:no-ready-work
+  2026-08-24T13:45:59Z	cycle:end
+
+========== D1. merge poll ARMED (registration + sidecar, no retirement receipt) ==========
+state/ poll artifacts: ship-await-merge-d1.pr-poll ship-await-merge-d1.pr-poll-registration 
+state/.bosun.log:
+  2026-08-24T13:46:00Z	no-progress:ship-await-merge-d1:suppressed:parked age=7201s
+
+========== D2. retirement receipt PUBLISHED, registration+sidecar still on disk (two-phase window) ==========
+state/ poll artifacts: ship-await-merge-d1.pr-poll ship-await-merge-d1.pr-poll-registration ship-await-merge-d1.pr-poll-retirement 
+state/.bosun.log:
+  2026-08-24T13:46:02Z	no-progress:ship-await-merge-d1:WOULD-escalate reason=no-change-for=7203s threshold=1800
+
+(expected: D1 suppressed, D2 alarms - a published receipt means NOT armed)
+
+========== B1. deploy target famclaw@homelab is 3 commits behind, captain hold OPEN ==========
+state/.bosun.log:
+  2026-08-24T13:46:03Z	cycle:start dry-run=1
+  2026-08-24T13:46:04Z	deploy-drift:famclaw:suppressed:captain-hold
+  2026-08-24T13:46:04Z	deploy-drift:ok:all-held
+  2026-08-24T13:46:04Z	idle-fleet:silent:no-ready-work
+  2026-08-24T13:46:04Z	cycle:end
+
+========== B2. same drift, hold ANSWERED -> bosun tick ==========
+state/.bosun.log:
+  2026-08-24T13:46:05Z	cycle:start dry-run=1
+  2026-08-24T13:46:05Z	deploy-drift:WOULD-escalate:DEPLOY_DRIFT: famclaw: 3 commit(s) merged but NOT PULLED on homelab:/opt/famclaw
+  2026-08-24T13:46:06Z	idle-fleet:silent:no-ready-work
+  2026-08-24T13:46:06Z	cycle:end
+
+========== C. deploy target 'app(v2)', unrelated hold titled 'restart appv2 service' ==========
+state/.bosun.log:
+  2026-08-24T13:46:07Z	cycle:start dry-run=1
+  2026-08-24T13:46:07Z	deploy-drift:WOULD-escalate:DEPLOY_DRIFT: app(v2): 3 commit(s) merged but NOT PULLED on homelab:/opt/appv2
+  2026-08-24T13:46:07Z	idle-fleet:silent:no-ready-work
+  2026-08-24T13:46:07Z	cycle:end
+
+(expected: the appv2 hold must NOT suppress app(v2) drift)

@@ -1,0 +1,16 @@
+Repro: config/crew-dispatch.json active + explicit --model tier.
+
+=== BEFORE (base 6a86ebb bin/fm-spawn.sh) ===
+$ fm-spawn.sh ev-crash-c1 <project> --harness codex --model gpt-5 --effort high --mode no-mistakes --yolo off   (crew-dispatch.json active)
+exit=1
+  /home/dep/.no-mistakes/worktrees/6127ee9fca86/01M0S9Z2YR3PNQP2EPBQVCCE1P/bin/fm-spawn.sh: line 931: DISPATCH_RATIONALE_SET: unbound variable
+
+=== AFTER (283a8b0 bin/fm-spawn.sh) ===
+$ fm-spawn.sh ev-crash-c1 <project> --harness codex --model gpt-5 --effort high --mode no-mistakes --yolo off   (crew-dispatch.json active)
+exit=1
+  error: config/crew-dispatch.json is active and --model gpt-5 was explicitly requested, but --dispatch-rationale or --dispatch-override was not supplied
+  refusing to launch a crewmate whose model tier was chosen without consulting the dispatch rules
+  
+  Available crew-dispatch rules:
+    when: "current events" -> use: grok/grok-4/high
+    default: codex/gpt-5/medium

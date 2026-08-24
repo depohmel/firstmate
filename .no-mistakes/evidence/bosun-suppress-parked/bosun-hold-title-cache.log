@@ -1,0 +1,17 @@
+open captain holds: 5   deploy-drift targets: 4
+
+tasks-axi invocations during one bosun tick:
+        1 list --kind captain --state held
+        1 ready
+
+  total: 2
+  `tasks-axi show` invocations: 0  (uncached would be 5 holds x 4 drift lines = 20)
+
+state/.bosun.log:
+  2026-08-24T13:53:13Z	cycle:start dry-run=1
+  2026-08-24T13:53:15Z	deploy-drift:WOULD-escalate:DEPLOY_DRIFT: alpha: 3 commit(s) merged but NOT PULLED on homelab:/opt/alpha
+  DEPLOY_DRIFT: bravo: 3 commit(s) merged but NOT PULLED on homelab:/opt/bravo
+  DEPLOY_DRIFT: charlie: 3 commit(s) merged but NOT PULLED on homelab:/opt/charlie
+  DEPLOY_DRIFT: delta: 3 commit(s) merged but NOT PULLED on homelab:/opt/delta
+  2026-08-24T13:53:15Z	idle-fleet:silent:no-ready-work
+  2026-08-24T13:53:15Z	cycle:end

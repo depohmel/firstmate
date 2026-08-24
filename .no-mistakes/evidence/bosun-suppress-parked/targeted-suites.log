@@ -1,0 +1,30 @@
+Targeted suites for this change (bosun parked suppression + spawn dispatch wiring).
+
+$ bash tests/fm-bosun.test.sh
+ok - idle fleet + ready work fires
+ok - idle fleet + nothing ready stays silent
+ok - idle fleet + only held/blocked items stays silent
+ok - busy fleet + ready work stays silent
+ok - no-progress crew suppressed by armed merge poll
+ok - retired merge poll no longer parks the no-progress crew
+ok - malformed poll registration no longer parks the no-progress crew
+ok - paused status suppresses no-progress and stalled re-alarms
+ok - parked work suppressed by open captain hold
+ok - deploy drift suppressed by open captain hold
+ok - deploy drift suppressed by a hold whose title names the project
+ok - deploy-drift subject matching treats metacharacter names literally
+
+$ bash tests/fm-spawn-dispatch-profile.test.sh
+ok - active crew-dispatch profile does not block secondmate launches
+ok - active crew-dispatch profile refuses an explicit model tier without a rationale and prints the rule menu
+ok - active crew-dispatch profile permits an explicit model tier with a recorded rationale
+ok - --dispatch-override bypasses the rationale requirement and records the reason in meta
+ok - absent crew-dispatch.json needs no rationale; --dispatch-rationale is a no-op
+# all fm-spawn-dispatch-profile tests passed
+
+$ bash tests/fm-spawn-batch.test.sh
+ok - batch dispatch re-execs and reports every id=repo pair
+ok - batch detection: single pair batches, non-pair rejected, single-task and slash-id stay single
+ok - batch dispatch requires the shared ship delivery contract before any pair runs
+ok - scout batch refuses ship delivery flags instead of ignoring them
+ok - projects/ paths are scoped through the firstmate home for single-task spawn

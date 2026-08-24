@@ -1,0 +1,94 @@
+config/crew-dispatch.json is ACTIVE:
+  {"rules":[{"when":"current events","use":{"harness":"grok","model":"grok-4","effort":"high"}}],"default":{"harness":"codex","model":"gpt-5","effort":"medium"}}
+
+========== 1. explicit --model with NO rationale (guard must refuse) ==========
+$ fm-spawn.sh ev-refuse-r1 <project> --harness codex --model gpt-5 --effort high
+exit=1
+  error: config/crew-dispatch.json is active and --model gpt-5 was explicitly requested, but --dispatch-rationale or --dispatch-override was not supplied
+  refusing to launch a crewmate whose model tier was chosen without consulting the dispatch rules
+  
+  Available crew-dispatch rules:
+    when: "current events" -> use: grok/grok-4/high
+    default: codex/gpt-5/medium
+state/ev-refuse-r1.meta written? no (refused before meta)
+
+========== 2. same spawn WITH --dispatch-rationale (space form) ==========
+$ fm-spawn.sh ev-rationale-r2 <project> --harness codex --model gpt-5 --effort high --dispatch-rationale "trivial mechanical edit matches rule 2"
+exit=0
+  warning: /tmp/fm-spawn-dispatch-profile.v2wDym/evidence-dispatch/home/data/ev-rationale-r2/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  spawned ev-rationale-r2 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-ev-rationale-r2 worktree=/tmp/fm-spawn-dispatch-profile.v2wDym/evidence-dispatch/wt
+state/ev-rationale-r2.meta:
+  window=firstmate:fm-ev-rationale-r2
+  endpoint_task_id=ev-rationale-r2
+  worktree=/tmp/fm-spawn-dispatch-profile.v2wDym/evidence-dispatch/wt
+  project=/tmp/fm-spawn-dispatch-profile.v2wDym/evidence-dispatch/project
+  harness=codex
+  kind=ship
+  mode=no-mistakes
+  yolo=off
+  tasktmp=/tmp/fm-ev-rationale-r2
+  model=gpt-5
+  effort=high
+  dispatch_rationale=trivial mechanical edit matches rule 2
+  spawn_gen=s1787579252.2883338.30824
+launch command actually sent to the pane:
+  env -u CURSOR_AGENT -u CURSOR_INVOKED_AS codex --model 'gpt-5' -c 'model_reasoning_effort="high"' --dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch '/tmp/fm-spawn-dispatch-profile.v2wDym/evidence-dispatch/home/state/ev-rationale-r2.turn-ended'\"]" "$('/home/dep/.no-mistakes/worktrees/6127ee9fca86/01M0S9Z2YR3PNQP2EPBQVCCE1P/bin/fm-operational-input.sh' encode launch-brief < '/tmp/fm-spawn-dispatch-profile.v2wDym/evidence-dispatch/home/data/ev-rationale-r2/brief.md')"
+
+========== 3. --dispatch-override=<reason> (= form) bypasses the rationale requirement ==========
+$ fm-spawn.sh ev-override-r3 <project> --harness codex --model=gpt-5 --dispatch-override="consciously choosing codex/gpt-5"
+exit=0
+  warning: /tmp/fm-spawn-dispatch-profile.v2wDym/evidence-dispatch/home/data/ev-override-r3/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  spawned ev-override-r3 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-ev-override-r3 worktree=/tmp/fm-spawn-dispatch-profile.v2wDym/evidence-dispatch/wt
+state/ev-override-r3.meta:
+  window=firstmate:fm-ev-override-r3
+  endpoint_task_id=ev-override-r3
+  worktree=/tmp/fm-spawn-dispatch-profile.v2wDym/evidence-dispatch/wt
+  project=/tmp/fm-spawn-dispatch-profile.v2wDym/evidence-dispatch/project
+  harness=codex
+  kind=ship
+  mode=no-mistakes
+  yolo=off
+  tasktmp=/tmp/fm-ev-override-r3
+  model=gpt-5
+  effort=high
+  dispatch_override=consciously choosing codex/gpt-5
+  spawn_gen=s1787579255.2883561.2507
+
+========== 4. empty value is rejected ==========
+$ fm-spawn.sh ev-refuse-r1 <project> --harness codex --dispatch-rationale ""
+exit=1
+  error: --dispatch-rationale requires a non-empty value
+
+========== 5. crew-dispatch.json ABSENT -> flag is a no-op, nothing recorded ==========
+$ fm-spawn.sh ev-absent-r4 <project> --model sonnet --effort high --dispatch-rationale "not applicable"
+exit=0
+  warning: /tmp/fm-spawn-dispatch-profile.v2wDym/evidence-nodispatch/home/data/ev-absent-r4/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  spawned ev-absent-r4 harness=claude kind=ship mode=no-mistakes yolo=off window=firstmate:fm-ev-absent-r4 worktree=/tmp/fm-spawn-dispatch-profile.v2wDym/evidence-nodispatch/wt
+state/ev-absent-r4.meta:
+  window=firstmate:fm-ev-absent-r4
+  endpoint_task_id=ev-absent-r4
+  worktree=/tmp/fm-spawn-dispatch-profile.v2wDym/evidence-nodispatch/wt
+  project=/tmp/fm-spawn-dispatch-profile.v2wDym/evidence-nodispatch/project
+  harness=claude
+  kind=ship
+  mode=no-mistakes
+  yolo=off
+  tasktmp=/tmp/fm-ev-absent-r4
+  model=sonnet
+  effort=high
+  busy_gen=g1787579258.2883983.5305
+  spawn_gen=s1787579258.2883844.24523
+
+========== 6. batch dispatch forwards the shared rationale to every pair ==========
+$ fm-spawn.sh ev-batch-a1=projects/pa ev-batch-b2=projects/pb --harness codex --model gpt-5 --dispatch-rationale "batch-wide tier choice"
+exit=0
+  warning: /tmp/fm-spawn-dispatch-profile.v2wDym/evidence-batch/home/data/ev-batch-a1/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  spawned ev-batch-a1 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-ev-batch-a1 worktree=/tmp/fm-spawn-dispatch-profile.v2wDym/evidence-batch/wt
+  warning: /tmp/fm-spawn-dispatch-profile.v2wDym/evidence-batch/home/data/ev-batch-b2/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  spawned ev-batch-b2 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-ev-batch-b2 worktree=/tmp/fm-spawn-dispatch-profile.v2wDym/evidence-batch/wt
+  state/ev-batch-a1.meta:
+    model=gpt-5
+    dispatch_rationale=batch-wide tier choice
+  state/ev-batch-b2.meta:
+    model=gpt-5
+    dispatch_rationale=batch-wide tier choice
