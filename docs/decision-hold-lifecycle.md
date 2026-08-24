@@ -75,6 +75,8 @@ Feeding is independent of handling: it never acknowledges a result and never sup
 It resolves every repeated `blocked-by:` edge against structured Done records, keeps missing blockers unresolved, and classifies only an unblocked captain hold as actionable.
 Its secondmate-home summary classifies an actionable captain hold as `captain_decision` and preserves blocked captain holds as queued work in the owning home.
 
+`bin/fm-park-state-lib.sh` reads the same open captain holds so the bosun stops re-alarming a condition the captain already holds; the suppression contract is owned by [`fm-bosun.md`](fm-bosun.md#what-it-checks-and-does).
+
 `bin/fm-bearings-snapshot.sh` projects actionable captain holds into `decisions_open` and leaves blocked captain holds in ordinary queued gates.
 It excludes completed kind `captain` records from Recently Landed.
 The projection remains read-only and does not inspect historical prose.
