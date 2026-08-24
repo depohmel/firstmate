@@ -7,7 +7,8 @@ warning.
 
 ## What it checks and does
 
-Each cycle iterates over every `state/<id>.meta` and runs six checks. Every
+Each cycle iterates over every `state/<id>.meta` and runs eight per-task
+checks, then two fleet-level ones (deploy drift, idle fleet). Every
 check can fail (i.e. produce a negative verdict); a predicate that can never say
 "no" is not a check.
 
