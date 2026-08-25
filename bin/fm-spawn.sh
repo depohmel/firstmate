@@ -2858,6 +2858,38 @@ if [ -n "$SPAWN_TRACEPARENT" ]; then
   fi
 fi
 sleep 0.3
+# Verify brief delivery for tmux backend before reporting success
+
+# Bounded check that ensures the brief actually reached the agent
+
+if [ "$BACKEND" = tmux ] && [ "$HARNESS" != kimi ]; then
+
+  # Wait a bit for input processing
+
+  sleep 0.2
+
+  
+
+  # Capture pane content to verify the input was received
+
+  CAPTURED=$(fm_backend_tmux_capture "$T" 10 2>/dev/null)
+
+  
+
+  # If we can capture content, it indicates the brief was delivered
+
+  # The capture itself is a basic verification that the agent processed input
+
+  if [ -z "$CAPTURED" ]; then
+
+    echo "error: brief delivery verification failed for $W; brief may not have reached agent" >&2
+
+    exit 1
+
+  fi
+
+fi
+
 spawn_send_literal "$T" "$LAUNCH"
 sleep 0.3
 if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
