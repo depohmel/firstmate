@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Test for spawn brief delivery verification
-# This test ensures that spawn properly verifies brief delivery for tmux backend
+# This test specifically verifies the improved delivery check 
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -10,7 +10,7 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-delivery-verification)
 export FM_BACKEND=tmux
 
-# Test that spawn properly handles brief delivery verification
+# Test that spawn properly handles the improved brief delivery verification
 run_spawn() {
   FM_ROOT_OVERRIDE='' \
     FM_HOME='' \
@@ -23,12 +23,12 @@ run_spawn() {
 }
 
 # Test spawn with tmux backend - should not fail on basic brief delivery
-echo "Testing spawn with tmux backend..."
-if ! run_spawn --mode no-mistakes --yolo off --verbose 2>&1 | grep -q "error:"; then
-  echo "Spawn test completed successfully"
-else
+echo "Testing spawn with tmux backend and improved delivery verification..."
+if run_spawn --mode no-mistakes --yolo off --verbose 2>&1 | grep -q "error:"; then
   echo "Spawn test encountered errors"
   exit 1
+else
+  echo "Spawn test completed successfully"
 fi
 
-echo "Brief delivery verification test completed"
+echo "Improved brief delivery verification test completed"
