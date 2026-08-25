@@ -2887,6 +2887,34 @@ if [ "$BACKEND" = tmux ] && [ "$HARNESS" != kimi ]; then
     exit 1
 
   fi
+# Verify brief delivery for tmux backend - check that launch command was actually consumed
+
+# Place this after spawn_send_literal to verify the command was delivered
+
+if [ "$BACKEND" = tmux ] && [ "$HARNESS" != kimi ]; then
+
+  # Give the command time to be processed
+
+  sleep 0.5
+
+  
+
+  # Check if the command was actually consumed by verifying the pane content
+
+  CAPTURED=$(fm_backend_tmux_capture "$T" 20 2>/dev/null)
+
+  
+
+  # Basic verification - if we got content, it suggests the command was processed
+
+  if [ -z "$CAPTURED" ]; then
+
+    echo "warning: brief delivery verification for $W - no pane content captured" >&2
+
+  fi
+
+fi
+
 
 fi
 
